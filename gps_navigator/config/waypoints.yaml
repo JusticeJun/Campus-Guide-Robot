@@ -1,0 +1,26 @@
+waypoints:
+  W01:
+    name: "누리관"
+    latitude: 35.1348500
+    longitude: 129.1038000
+    neighbors: [W02, W03, W04, W05]
+  W02:
+    name: "광장 중앙"
+    latitude: 35.1348600
+    longitude: 129.1040865
+    neighbors: [W01, W03, W04, W05]
+  W03:
+    name: "청운관"
+    latitude: 35.1345200
+    longitude: 129.1042250
+    neighbors: [W01, W02, W04, W05]
+  W04:
+    name: "웅비관"
+    latitude: 35.1345000
+    longitude: 129.1037060
+    neighbors: [W01, W02, W03, W05]
+  W05:
+    name: "본부"
+    latitude: 35.1340450
+    longitude: 129.1037000
+    neighbors: [W01, W02, W03, W04]
