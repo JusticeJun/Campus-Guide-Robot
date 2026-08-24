@@ -44,19 +44,29 @@ class Navigator(Node):
         self.declare_parameter('route_manager_timeout_s', 3.0)
         self.declare_parameter('warning_throttle_s', 5.0)
         self.declare_parameter('diagnostic_period_s', 1.0)
-        self.declare_parameter('steering_gain', 0.5)
         self.declare_parameter('max_yaw_rate_rad_s', 1.0)
+        self.declare_parameter('full_steering_error_deg', 30.0)
+        self.declare_parameter('heading_deadband_deg', 2.0)
         for name in (
             'gps_timeout_s',
             'heading_timeout_s',
             'route_manager_timeout_s',
             'warning_throttle_s',
             'diagnostic_period_s',
-            'steering_gain',
             'max_yaw_rate_rad_s',
+            'full_steering_error_deg',
         ):
             if self.get_parameter(name).value <= 0.0:
                 raise ValueError(f'{name} must be positive')
+        deadband = self.get_parameter('heading_deadband_deg').value
+        full_steering_error = self.get_parameter(
+            'full_steering_error_deg'
+        ).value
+        if deadband < 0.0 or deadband >= full_steering_error:
+            raise ValueError(
+                'heading_deadband_deg must be non-negative and less than '
+                'full_steering_error_deg'
+            )
 
         mavros_qos = QoSProfile(depth=10)
         mavros_qos.reliability = ReliabilityPolicy.BEST_EFFORT
@@ -212,10 +222,21 @@ class Navigator(Node):
         return (target_heading - current_heading + 180.0) % 360.0 - 180.0
 
     @staticmethod
-    def steering_yaw_rate(heading_error_deg, gain):
+    def steering_yaw_rate(
+        heading_error_deg, max_yaw_rate, full_steering_error_deg,
+        deadband_deg,
+    ):
         # Geographic headings increase clockwise, while ROS yaw increases
         # counter-clockwise. Convert the sign at this boundary.
-        return -math.radians(heading_error_deg) * gain
+        error_magnitude = abs(heading_error_deg)
+        if error_magnitude <= deadband_deg:
+            return 0.0
+        steering_ratio = min(
+            1.0,
+            (error_magnitude - deadband_deg)
+            / (full_steering_error_deg - deadband_deg),
+        )
+        return -math.copysign(max_yaw_rate * steering_ratio, heading_error_deg)
 
     def make_command(self, speed, yaw_rate):
         command = PositionTarget()
@@ -287,11 +308,13 @@ class Navigator(Node):
             self.get_logger().info(f'도착! 거리:{distance:.1f}m 정지')
             return
 
-        steering = self.steering_yaw_rate(
-            error, self.get_parameter('steering_gain').value
-        )
         max_yaw_rate = self.get_parameter('max_yaw_rate_rad_s').value
-        steering = max(-max_yaw_rate, min(max_yaw_rate, steering))
+        steering = self.steering_yaw_rate(
+            error,
+            max_yaw_rate,
+            self.get_parameter('full_steering_error_deg').value,
+            self.get_parameter('heading_deadband_deg').value,
+        )
         command = self.make_command(0.2, steering)
         self.cmd_pub.publish(command)
         self.log_diagnostics(distance, target_heading, error, command)

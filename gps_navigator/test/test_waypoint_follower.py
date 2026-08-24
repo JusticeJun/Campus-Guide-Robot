@@ -1,5 +1,3 @@
-import math
-
 from gps_navigator.waypoint_follower_node import Navigator
 
 
@@ -10,12 +8,17 @@ def test_signed_heading_error_wraps_at_zero_degrees():
 
 def test_sixty_degree_error_produces_visible_yaw_rate():
     error = Navigator.signed_heading_error(60.0, 0.0)
-    yaw_rate = Navigator.steering_yaw_rate(error, 0.5)
+    yaw_rate = Navigator.steering_yaw_rate(error, 1.0, 30.0, 2.0)
 
-    assert math.isclose(yaw_rate, -math.pi / 6.0)
+    assert yaw_rate == -1.0
 
 
 def test_geographic_left_turn_produces_positive_ros_yaw_rate():
     error = Navigator.signed_heading_error(300.0, 0.0)
 
-    assert Navigator.steering_yaw_rate(error, 0.5) > 0.0
+    assert Navigator.steering_yaw_rate(error, 1.0, 30.0, 2.0) > 0.0
+
+
+def test_steering_tapers_near_target_heading():
+    assert Navigator.steering_yaw_rate(2.0, 1.0, 30.0, 2.0) == 0.0
+    assert 0.0 > Navigator.steering_yaw_rate(10.0, 1.0, 30.0, 2.0) > -1.0
