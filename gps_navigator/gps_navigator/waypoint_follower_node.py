@@ -211,6 +211,12 @@ class Navigator(Node):
     def signed_heading_error(target_heading, current_heading):
         return (target_heading - current_heading + 180.0) % 360.0 - 180.0
 
+    @staticmethod
+    def steering_yaw_rate(heading_error_deg, gain):
+        # Geographic headings increase clockwise, while ROS yaw increases
+        # counter-clockwise. Convert the sign at this boundary.
+        return -math.radians(heading_error_deg) * gain
+
     def make_command(self, speed, yaw_rate):
         command = PositionTarget()
         command.header.stamp = self.get_clock().now().to_msg()
@@ -281,9 +287,8 @@ class Navigator(Node):
             self.get_logger().info(f'도착! 거리:{distance:.1f}m 정지')
             return
 
-        steering = (
-            math.radians(error)
-            * self.get_parameter('steering_gain').value
+        steering = self.steering_yaw_rate(
+            error, self.get_parameter('steering_gain').value
         )
         max_yaw_rate = self.get_parameter('max_yaw_rate_rad_s').value
         steering = max(-max_yaw_rate, min(max_yaw_rate, steering))
