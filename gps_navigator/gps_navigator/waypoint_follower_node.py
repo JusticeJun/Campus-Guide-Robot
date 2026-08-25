@@ -46,6 +46,7 @@ class Navigator(Node):
         self.declare_parameter('route_manager_timeout_s', 3.0)
         self.declare_parameter('warning_throttle_s', 5.0)
         self.declare_parameter('diagnostic_period_s', 1.0)
+        self.declare_parameter('forward_speed_m_s', 0.3)
         self.declare_parameter('max_yaw_rate_rad_s', 1.5)
         self.declare_parameter('full_steering_error_deg', 30.0)
         self.declare_parameter('near_full_steering_error_deg', 15.0)
@@ -59,6 +60,7 @@ class Navigator(Node):
             'route_manager_timeout_s',
             'warning_throttle_s',
             'diagnostic_period_s',
+            'forward_speed_m_s',
             'max_yaw_rate_rad_s',
             'full_steering_error_deg',
             'near_full_steering_error_deg',
@@ -379,7 +381,8 @@ class Navigator(Node):
                 self.alignment_pending = False
 
         control_mode = 'PRE_STEER' if settling else 'TRACKING'
-        command = self.make_command(0.0 if settling else 0.2, steering)
+        speed = self.get_parameter('forward_speed_m_s').value
+        command = self.make_command(0.0 if settling else speed, steering)
         self.cmd_pub.publish(command)
         self.log_diagnostics(
             distance, target_heading, error, command, control_mode,
