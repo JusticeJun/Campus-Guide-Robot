@@ -16,8 +16,8 @@ waypoints:
     neighbors: [W01, W02, W04, W05]
   W04:
     name: "웅비관"
-    latitude: 35.1345000
-    longitude: 129.1037060
+    latitude: 35.1345829
+    longitude: 129.1038492
     neighbors: [W01, W02, W03, W05]
   W05:
     name: "본부"
