@@ -38,8 +38,7 @@ class Navigator(Node):
         self.watchdog_blocked = True
         self.last_warning_ns = {}
         self.last_diagnostic_ns = 0
-        self.alignment_started_ns = None
-        self.alignment_pending = False
+        self.alignment_active = False
 
         self.declare_parameter('gps_timeout_s', 2.0)
         self.declare_parameter('heading_timeout_s', 2.0)
@@ -53,7 +52,8 @@ class Navigator(Node):
         self.declare_parameter('near_waypoint_distance_m', 10.0)
         self.declare_parameter('heading_deadband_deg', 2.0)
         self.declare_parameter('alignment_min_error_deg', 10.0)
-        self.declare_parameter('steering_settle_s', 1.0)
+        self.declare_parameter('alignment_reentry_error_deg', 30.0)
+        self.declare_parameter('alignment_speed_m_s', 0.1)
         for name in (
             'gps_timeout_s',
             'heading_timeout_s',
@@ -66,7 +66,8 @@ class Navigator(Node):
             'near_full_steering_error_deg',
             'near_waypoint_distance_m',
             'alignment_min_error_deg',
-            'steering_settle_s',
+            'alignment_reentry_error_deg',
+            'alignment_speed_m_s',
         ):
             if self.get_parameter(name).value <= 0.0:
                 raise ValueError(f'{name} must be positive')
@@ -86,6 +87,17 @@ class Navigator(Node):
             raise ValueError(
                 'near_full_steering_error_deg must be greater than the '
                 'deadband and no greater than full_steering_error_deg'
+            )
+        alignment_min_error = self.get_parameter(
+            'alignment_min_error_deg'
+        ).value
+        alignment_reentry_error = self.get_parameter(
+            'alignment_reentry_error_deg'
+        ).value
+        if alignment_reentry_error <= alignment_min_error:
+            raise ValueError(
+                'alignment_reentry_error_deg must be greater than '
+                'alignment_min_error_deg'
             )
 
         mavros_qos = QoSProfile(depth=10)
@@ -153,8 +165,7 @@ class Navigator(Node):
             self.target_lat = msg.latitude
             self.target_lon = msg.longitude
             if changed:
-                self.alignment_pending = True
-                self.alignment_started_ns = None
+                self.alignment_active = True
                 self.get_logger().info(
                     f'새 목표 좌표: '
                     f'({self.target_lat:.7f}, {self.target_lon:.7f})'
@@ -360,29 +371,34 @@ class Navigator(Node):
             full_steering_error,
             self.get_parameter('heading_deadband_deg').value,
         )
-        now_ns = self.get_clock().now().nanoseconds
         alignment_min_error = self.get_parameter(
             'alignment_min_error_deg'
         ).value
-        if self.alignment_pending and abs(error) < alignment_min_error:
-            self.alignment_pending = False
-        if self.alignment_pending and self.alignment_started_ns is None:
-            self.alignment_started_ns = now_ns
+        alignment_reentry_error = self.get_parameter(
+            'alignment_reentry_error_deg'
+        ).value
+        if self.alignment_active and abs(error) <= alignment_min_error:
+            self.alignment_active = False
             self.get_logger().info(
-                'Pre-steering toward new waypoint before moving'
+                'Heading aligned; switching to waypoint tracking speed'
             )
-        settling = False
-        if self.alignment_pending:
-            settle_ns = (
-                self.get_parameter('steering_settle_s').value * 1e9
+        elif (
+            not self.alignment_active
+            and abs(error) >= alignment_reentry_error
+        ):
+            self.alignment_active = True
+            self.get_logger().warning(
+                'Large heading error; reducing speed for realignment'
             )
-            settling = now_ns - self.alignment_started_ns < settle_ns
-            if not settling:
-                self.alignment_pending = False
 
-        control_mode = 'PRE_STEER' if settling else 'TRACKING'
-        speed = self.get_parameter('forward_speed_m_s').value
-        command = self.make_command(0.0 if settling else speed, steering)
+        control_mode = 'ALIGNING' if self.alignment_active else 'TRACKING'
+        speed_parameter = (
+            'alignment_speed_m_s'
+            if self.alignment_active else 'forward_speed_m_s'
+        )
+        command = self.make_command(
+            self.get_parameter(speed_parameter).value, steering
+        )
         self.cmd_pub.publish(command)
         self.log_diagnostics(
             distance, target_heading, error, command, control_mode,
