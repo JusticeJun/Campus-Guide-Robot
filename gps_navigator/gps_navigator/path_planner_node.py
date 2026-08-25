@@ -6,6 +6,7 @@ import rclpy
 from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.signals import SignalHandlerOptions
 from sensor_msgs.msg import NavSatFix
 from std_msgs.msg import String
 import yaml
@@ -171,7 +172,10 @@ class PathPlanner(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
+    rclpy.init(
+        args=args,
+        signal_handler_options=SignalHandlerOptions.NO,
+    )
     node = PathPlanner()
     try:
         rclpy.spin(node)

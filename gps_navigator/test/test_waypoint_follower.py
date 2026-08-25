@@ -26,3 +26,15 @@ def test_steering_tapers_near_target_heading():
 
 def test_ten_degree_error_requests_maximum_steering():
     assert Navigator.steering_yaw_rate(10.0, 1.5, 10.0, 2.0) == -1.5
+
+
+def test_steering_hysteresis_holds_straight_until_reentry_threshold():
+    assert not Navigator.hysteresis_active(True, 5.0, 10.0, 5.0)
+    assert not Navigator.hysteresis_active(False, 9.9, 10.0, 5.0)
+    assert Navigator.hysteresis_active(False, 10.0, 10.0, 5.0)
+
+
+def test_large_error_alignment_uses_separate_hysteresis():
+    assert Navigator.hysteresis_active(True, 31.0, 45.0, 30.0)
+    assert not Navigator.hysteresis_active(True, 30.0, 45.0, 30.0)
+    assert Navigator.hysteresis_active(False, 45.0, 45.0, 30.0)

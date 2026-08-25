@@ -8,6 +8,7 @@ from rclpy.qos import (
     QoSProfile,
     ReliabilityPolicy,
 )
+from rclpy.signals import SignalHandlerOptions
 from sensor_msgs.msg import NavSatFix, NavSatStatus
 from std_msgs.msg import Bool, Float64, Header
 
@@ -40,6 +41,8 @@ class Navigator(Node):
         self.last_diagnostic_ns = 0
         self.fcu_target_yaw_rate = None
         self.steering_servo_pwm = None
+        self.steering_correction_active = True
+        self.large_error_alignment_active = True
 
         self.declare_parameter('gps_timeout_s', 2.0)
         self.declare_parameter('heading_timeout_s', 2.0)
@@ -49,7 +52,11 @@ class Navigator(Node):
         self.declare_parameter('forward_speed_m_s', 0.3)
         self.declare_parameter('max_yaw_rate_rad_s', 1.5)
         self.declare_parameter('full_steering_error_deg', 10.0)
-        self.declare_parameter('heading_deadband_deg', 2.0)
+        self.declare_parameter('alignment_threshold_deg', 5.0)
+        self.declare_parameter('correction_reentry_threshold_deg', 10.0)
+        self.declare_parameter('large_error_alignment_enter_deg', 45.0)
+        self.declare_parameter('large_error_alignment_exit_deg', 30.0)
+        self.declare_parameter('large_error_alignment_speed_m_s', 0.2)
         self.declare_parameter('steering_output_channel', 1)
         self.declare_parameter('steering_pwm_trim', 1500)
         for name in (
@@ -61,17 +68,42 @@ class Navigator(Node):
             'forward_speed_m_s',
             'max_yaw_rate_rad_s',
             'full_steering_error_deg',
+            'alignment_threshold_deg',
+            'correction_reentry_threshold_deg',
+            'large_error_alignment_enter_deg',
+            'large_error_alignment_exit_deg',
+            'large_error_alignment_speed_m_s',
         ):
             if self.get_parameter(name).value <= 0.0:
                 raise ValueError(f'{name} must be positive')
-        deadband = self.get_parameter('heading_deadband_deg').value
+        alignment_threshold = self.get_parameter(
+            'alignment_threshold_deg'
+        ).value
+        correction_reentry_threshold = self.get_parameter(
+            'correction_reentry_threshold_deg'
+        ).value
         full_steering_error = self.get_parameter(
             'full_steering_error_deg'
         ).value
-        if deadband < 0.0 or deadband >= full_steering_error:
+        if not (
+            alignment_threshold < correction_reentry_threshold
+            <= full_steering_error
+        ):
             raise ValueError(
-                'heading_deadband_deg must be non-negative and less than '
-                'full_steering_error_deg'
+                'alignment_threshold_deg must be less than '
+                'correction_reentry_threshold_deg, which must be no greater '
+                'than full_steering_error_deg'
+            )
+        alignment_exit = self.get_parameter(
+            'large_error_alignment_exit_deg'
+        ).value
+        alignment_enter = self.get_parameter(
+            'large_error_alignment_enter_deg'
+        ).value
+        if alignment_exit >= alignment_enter:
+            raise ValueError(
+                'large_error_alignment_exit_deg must be less than '
+                'large_error_alignment_enter_deg'
             )
         steering_channel = self.get_parameter(
             'steering_output_channel'
@@ -151,6 +183,8 @@ class Navigator(Node):
             self.target_lat = msg.latitude
             self.target_lon = msg.longitude
             if changed:
+                self.steering_correction_active = True
+                self.large_error_alignment_active = True
                 self.get_logger().info(
                     f'새 목표 좌표: '
                     f'({self.target_lat:.7f}, {self.target_lon:.7f})'
@@ -268,6 +302,14 @@ class Navigator(Node):
         )
         return -math.copysign(max_yaw_rate * steering_ratio, heading_error_deg)
 
+    @staticmethod
+    def hysteresis_active(
+        active, error_magnitude, enter_threshold, exit_threshold,
+    ):
+        if active:
+            return error_magnitude > exit_threshold
+        return error_magnitude >= enter_threshold
+
     def make_command(self, speed, yaw_rate):
         command = PositionTarget()
         command.header.stamp = self.get_clock().now().to_msg()
@@ -276,6 +318,7 @@ class Navigator(Node):
             PositionTarget.IGNORE_PX
             | PositionTarget.IGNORE_PY
             | PositionTarget.IGNORE_PZ
+            | PositionTarget.IGNORE_VZ
             | PositionTarget.IGNORE_AFX
             | PositionTarget.IGNORE_AFY
             | PositionTarget.IGNORE_AFZ
@@ -328,7 +371,10 @@ class Navigator(Node):
             f'{self.get_parameter("steering_output_channel").value}, '
             f'steering_servo_pwm={servo_pwm}, '
             f'steering_servo_delta_pwm={servo_delta}, '
-            f'control_mode=TRACKING, '
+            f'steering_state='
+            f'{"TURN" if self.steering_correction_active else "STRAIGHT"}, '
+            f'control_mode='
+            f'{"ALIGNING" if self.large_error_alignment_active else "TRACKING"}, '
             f'final_frame=BODY_NED, '
             f'final_velocity_x_m_s={command.velocity.x:.2f}, '
             f'distance_m={distance:.1f}'
@@ -365,21 +411,43 @@ class Navigator(Node):
             return
 
         max_yaw_rate = self.get_parameter('max_yaw_rate_rad_s').value
-        steering = self.steering_yaw_rate(
-            error,
-            max_yaw_rate,
-            self.get_parameter('full_steering_error_deg').value,
-            self.get_parameter('heading_deadband_deg').value,
+        error_magnitude = abs(error)
+        self.steering_correction_active = self.hysteresis_active(
+            self.steering_correction_active,
+            error_magnitude,
+            self.get_parameter('correction_reentry_threshold_deg').value,
+            self.get_parameter('alignment_threshold_deg').value,
+        )
+        steering = 0.0
+        if self.steering_correction_active:
+            steering = self.steering_yaw_rate(
+                error,
+                max_yaw_rate,
+                self.get_parameter('full_steering_error_deg').value,
+                self.get_parameter('alignment_threshold_deg').value,
+            )
+        self.large_error_alignment_active = self.hysteresis_active(
+            self.large_error_alignment_active,
+            error_magnitude,
+            self.get_parameter('large_error_alignment_enter_deg').value,
+            self.get_parameter('large_error_alignment_exit_deg').value,
+        )
+        speed_parameter = (
+            'large_error_alignment_speed_m_s'
+            if self.large_error_alignment_active else 'forward_speed_m_s'
         )
         command = self.make_command(
-            self.get_parameter('forward_speed_m_s').value, steering
+            self.get_parameter(speed_parameter).value, steering
         )
         self.cmd_pub.publish(command)
         self.log_diagnostics(distance, target_heading, error, command)
 
 
 def main(args=None):
-    rclpy.init(args=args)
+    rclpy.init(
+        args=args,
+        signal_handler_options=SignalHandlerOptions.NO,
+    )
     node = Navigator()
     try:
         rclpy.spin(node)
