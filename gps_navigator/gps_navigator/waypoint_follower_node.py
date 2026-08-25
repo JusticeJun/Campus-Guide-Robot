@@ -1,7 +1,7 @@
 import math
 
 import rclpy
-from mavros_msgs.msg import PositionTarget
+from mavros_msgs.msg import PositionTarget, RCOut
 from rclpy.node import Node
 from rclpy.qos import (
     DurabilityPolicy,
@@ -38,6 +38,8 @@ class Navigator(Node):
         self.watchdog_blocked = True
         self.last_warning_ns = {}
         self.last_diagnostic_ns = 0
+        self.fcu_target_yaw_rate = None
+        self.steering_servo_pwm = None
 
         self.declare_parameter('gps_timeout_s', 2.0)
         self.declare_parameter('heading_timeout_s', 2.0)
@@ -48,6 +50,8 @@ class Navigator(Node):
         self.declare_parameter('max_yaw_rate_rad_s', 1.5)
         self.declare_parameter('full_steering_error_deg', 10.0)
         self.declare_parameter('heading_deadband_deg', 2.0)
+        self.declare_parameter('steering_output_channel', 1)
+        self.declare_parameter('steering_pwm_trim', 1500)
         for name in (
             'gps_timeout_s',
             'heading_timeout_s',
@@ -69,6 +73,11 @@ class Navigator(Node):
                 'heading_deadband_deg must be non-negative and less than '
                 'full_steering_error_deg'
             )
+        steering_channel = self.get_parameter(
+            'steering_output_channel'
+        ).value
+        if not isinstance(steering_channel, int) or steering_channel < 1:
+            raise ValueError('steering_output_channel must be a positive int')
 
         mavros_qos = QoSProfile(depth=10)
         mavros_qos.reliability = ReliabilityPolicy.BEST_EFFORT
@@ -91,6 +100,13 @@ class Navigator(Node):
         self.create_subscription(
             Header, '/gps_navigation/route_manager_heartbeat',
             self.heartbeat_callback, 10
+        )
+        self.create_subscription(
+            PositionTarget, '/mavros/setpoint_raw/target_local',
+            self.fcu_target_callback, mavros_qos
+        )
+        self.create_subscription(
+            RCOut, '/mavros/rc/out', self.rc_out_callback, mavros_qos
         )
         self.cmd_pub = self.create_publisher(
             PositionTarget, '/mavros/setpoint_raw/local', 10
@@ -148,6 +164,18 @@ class Navigator(Node):
 
     def heartbeat_callback(self, _msg):
         self.last_heartbeat_time_ns = self.get_clock().now().nanoseconds
+
+    def fcu_target_callback(self, msg):
+        self.fcu_target_yaw_rate = msg.yaw_rate
+
+    def rc_out_callback(self, msg):
+        channel_index = (
+            self.get_parameter('steering_output_channel').value - 1
+        )
+        self.steering_servo_pwm = (
+            msg.channels[channel_index]
+            if channel_index < len(msg.channels) else None
+        )
 
     def input_is_fresh(self, stamp_ns, timeout_parameter):
         if stamp_ns is None:
@@ -269,6 +297,24 @@ class Navigator(Node):
         )
         if now_ns - self.last_diagnostic_ns < period_ns:
             return
+        accepted_yaw_rate = (
+            'unavailable'
+            if self.fcu_target_yaw_rate is None
+            else f'{self.fcu_target_yaw_rate:.3f}'
+        )
+        servo_pwm = (
+            'unavailable'
+            if self.steering_servo_pwm is None
+            else str(self.steering_servo_pwm)
+        )
+        servo_delta = (
+            'unavailable'
+            if self.steering_servo_pwm is None
+            else str(
+                self.steering_servo_pwm
+                - self.get_parameter('steering_pwm_trim').value
+            )
+        )
         self.get_logger().info(
             'navigation_control: '
             f'heading_source=/mavros/global_position/compass_hdg, '
@@ -276,7 +322,12 @@ class Navigator(Node):
             f'target=({self.target_lat:.7f},{self.target_lon:.7f}), '
             f'target_bearing_deg={target_bearing:.1f}, '
             f'heading_error_deg={error:.1f}, '
-            f'steering_yaw_rate_rad_s={command.yaw_rate:.3f}, '
+            f'requested_yaw_rate_rad_s={command.yaw_rate:.3f}, '
+            f'fcu_target_yaw_rate_rad_s={accepted_yaw_rate}, '
+            f'steering_servo_channel='
+            f'{self.get_parameter("steering_output_channel").value}, '
+            f'steering_servo_pwm={servo_pwm}, '
+            f'steering_servo_delta_pwm={servo_delta}, '
             f'control_mode=TRACKING, '
             f'final_frame=BODY_NED, '
             f'final_velocity_x_m_s={command.velocity.x:.2f}, '
