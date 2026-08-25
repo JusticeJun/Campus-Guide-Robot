@@ -49,7 +49,7 @@ class Navigator(Node):
         self.declare_parameter('route_manager_timeout_s', 3.0)
         self.declare_parameter('warning_throttle_s', 5.0)
         self.declare_parameter('diagnostic_period_s', 1.0)
-        self.declare_parameter('forward_speed_m_s', 0.3)
+        self.declare_parameter('forward_speed_m_s', 0.5)
         self.declare_parameter('max_yaw_rate_rad_s', 1.5)
         self.declare_parameter('full_steering_error_deg', 10.0)
         self.declare_parameter('alignment_threshold_deg', 5.0)
