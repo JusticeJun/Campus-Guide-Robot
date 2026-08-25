@@ -53,7 +53,7 @@ class Navigator(Node):
         self.declare_parameter('heading_deadband_deg', 2.0)
         self.declare_parameter('alignment_min_error_deg', 10.0)
         self.declare_parameter('alignment_reentry_error_deg', 30.0)
-        self.declare_parameter('alignment_speed_m_s', 0.1)
+        self.declare_parameter('alignment_speed_m_s', 0.2)
         for name in (
             'gps_timeout_s',
             'heading_timeout_s',
