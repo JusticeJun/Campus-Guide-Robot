@@ -5,7 +5,7 @@ import statistics
 import time
 
 import rclpy
-from mavros_msgs.msg import ManualControl, RCOut, State
+from mavros_msgs.msg import PositionTarget, RCOut, State
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from rclpy.signals import SignalHandlerOptions
@@ -15,6 +15,28 @@ import yaml
 
 
 EARTH_RADIUS_M = 6371000.0
+
+
+def make_body_ned_velocity_yaw_rate_command(speed, yaw_rate):
+    command = PositionTarget()
+    command.coordinate_frame = PositionTarget.FRAME_BODY_NED
+    command.type_mask = (
+        PositionTarget.IGNORE_PX
+        | PositionTarget.IGNORE_PY
+        | PositionTarget.IGNORE_PZ
+        | PositionTarget.IGNORE_VZ
+        | PositionTarget.IGNORE_AFX
+        | PositionTarget.IGNORE_AFY
+        | PositionTarget.IGNORE_AFZ
+        | PositionTarget.IGNORE_YAW
+    )
+    command.velocity.x = speed
+    command.yaw_rate = yaw_rate
+    return command
+
+
+def yaw_rate_for_direction(direction, magnitude):
+    return magnitude if direction == 'LEFT' else -magnitude
 
 
 def heading_delta_deg(current, previous):
@@ -93,7 +115,8 @@ def fit_circle(points):
 
 
 def update_vehicle_constraints(
-    data, direction, radius, steering, actual_pwm, speed,
+    data, direction, radius, yaw_rate, actual_pwm, speed,
+    actual_pwm_min=None, actual_pwm_max=None,
     planning_radius_margin_ratio=None,
 ):
     constraints = data.setdefault('vehicle_constraints', {})
@@ -112,9 +135,12 @@ def update_vehicle_constraints(
     constraints['maximum_planning_curvature_1_per_m'] = None
     calibration = data.setdefault('calibration', {})
     calibration[side] = {
-        'steering_command_normalized': steering,
+        'command_pipeline': 'guided_body_ned_velocity_yaw_rate',
+        'requested_yaw_rate_rad_s': yaw_rate,
         'actual_steering_pwm': actual_pwm,
-        'speed_command_normalized': speed,
+        'actual_steering_pwm_min': actual_pwm_min,
+        'actual_steering_pwm_max': actual_pwm_max,
+        'speed_command_m_s': speed,
     }
     left_radius = constraints.get('minimum_turn_radius_left_m')
     right_radius = constraints.get('minimum_turn_radius_right_m')
@@ -144,12 +170,10 @@ class TurnRadiusCalibration(Node):
     def __init__(self):
         super().__init__('turn_radius_calibration')
         self.declare_parameter('direction', 'LEFT')
-        self.declare_parameter('steering_command_normalized', 1.0)
-        self.declare_parameter('steering_reversed', False)
-        self.declare_parameter('throttle_command_normalized', 0.15)
-        self.declare_parameter('dry_run', False)
-        self.declare_parameter('endpoint_confirmed', False)
-        self.declare_parameter('dry_run_hold_s', 2.0)
+        self.declare_parameter('test_mode', 'SATURATION')
+        self.declare_parameter('yaw_rate_rad_s', 1.5)
+        self.declare_parameter('forward_speed_m_s', 0.20)
+        self.declare_parameter('saturation_test_duration_s', 3.0)
         self.declare_parameter('target_turn_deg', 360.0)
         self.declare_parameter('startup_timeout_s', 20.0)
         self.declare_parameter('safety_timeout_s', 120.0)
@@ -165,15 +189,24 @@ class TurnRadiusCalibration(Node):
         )
         self.declare_parameter('planning_radius_margin_ratio', -1.0)
         self.declare_parameter('steering_output_channel', 1)
+        self.declare_parameter('steering_pwm_low_endpoint', 1100)
+        self.declare_parameter('steering_pwm_high_endpoint', 1900)
+        self.declare_parameter('steering_pwm_endpoint_tolerance', 20)
 
         self.direction = str(
             self.get_parameter('direction').value
         ).strip().upper()
         if self.direction not in ('LEFT', 'RIGHT'):
             raise ValueError('direction must be LEFT or RIGHT')
+        self.test_mode = str(
+            self.get_parameter('test_mode').value
+        ).strip().upper()
+        if self.test_mode not in ('SATURATION', 'CIRCLE'):
+            raise ValueError('test_mode must be SATURATION or CIRCLE')
         for name in (
-            'steering_command_normalized',
-            'dry_run_hold_s',
+            'yaw_rate_rad_s',
+            'forward_speed_m_s',
+            'saturation_test_duration_s',
             'target_turn_deg',
             'startup_timeout_s',
             'safety_timeout_s',
@@ -186,25 +219,32 @@ class TurnRadiusCalibration(Node):
         ):
             if self.get_parameter(name).value <= 0.0:
                 raise ValueError(f'{name} must be positive')
-        steering_command = self.get_parameter(
-            'steering_command_normalized'
-        ).value
-        throttle_command = self.get_parameter(
-            'throttle_command_normalized'
-        ).value
-        if steering_command > 1.0:
-            raise ValueError(
-                'steering_command_normalized must be in (0.0, 1.0]'
-            )
-        if not 0.0 < throttle_command <= 0.3:
-            raise ValueError(
-                'throttle_command_normalized must be in (0.0, 0.3]'
-            )
         steering_channel = self.get_parameter(
             'steering_output_channel'
         ).value
         if not isinstance(steering_channel, int) or steering_channel < 1:
             raise ValueError('steering_output_channel must be a positive int')
+        low_endpoint = self.get_parameter(
+            'steering_pwm_low_endpoint'
+        ).value
+        high_endpoint = self.get_parameter(
+            'steering_pwm_high_endpoint'
+        ).value
+        endpoint_tolerance = self.get_parameter(
+            'steering_pwm_endpoint_tolerance'
+        ).value
+        if not isinstance(low_endpoint, int) or not isinstance(
+            high_endpoint, int
+        ):
+            raise ValueError('steering PWM endpoints must be integers')
+        if low_endpoint >= high_endpoint:
+            raise ValueError(
+                'steering_pwm_low_endpoint must be below the high endpoint'
+            )
+        if not isinstance(endpoint_tolerance, int) or endpoint_tolerance < 0:
+            raise ValueError(
+                'steering_pwm_endpoint_tolerance must be a non-negative int'
+            )
         planning_margin = self.get_parameter(
             'planning_radius_margin_ratio'
         ).value
@@ -254,14 +294,20 @@ class TurnRadiusCalibration(Node):
             RCOut, '/mavros/rc/out', self.rc_out_callback, qos
         )
         self.command_publisher = self.create_publisher(
-            ManualControl, '/mavros/manual_control/send', 10
+            PositionTarget, '/mavros/setpoint_raw/local', 10
         )
         self.create_timer(0.1, self.control_loop)
         self.get_logger().warning(
-            'Physical turn-radius calibration ready: direction=%s, '
-            'dry_run=%s. Select MANUAL mode and do not run '
+            'Production-pipeline turn-radius calibration ready: mode=%s, '
+            'direction=%s, speed=%.2f m/s, yaw_rate=%.3f rad/s. '
+            'Select GUIDED mode, arm the Rover, and do not run '
             'waypoint_follower at the same time.'
-            % (self.direction, self.get_parameter('dry_run').value)
+            % (
+                self.test_mode,
+                self.direction,
+                self.forward_speed_command(),
+                self.yaw_rate_command(),
+            )
         )
 
     @staticmethod
@@ -278,10 +324,7 @@ class TurnRadiusCalibration(Node):
         if not self.valid_gps(msg):
             self.gps = None
             self.last_gps_ns = None
-            if (
-                self.started_ns is not None
-                and not self.get_parameter('dry_run').value
-            ):
+            if self.started_ns is not None:
                 self.finish('Invalid GPS fix', successful=False)
             return
         self.gps = (msg.latitude, msg.longitude)
@@ -295,10 +338,7 @@ class TurnRadiusCalibration(Node):
         if not math.isfinite(msg.data):
             self.heading = None
             self.last_heading_ns = None
-            if (
-                self.started_ns is not None
-                and not self.get_parameter('dry_run').value
-            ):
+            if self.started_ns is not None:
                 self.finish('Invalid compass heading', successful=False)
             return
         self.heading = msg.data % 360.0
@@ -340,47 +380,28 @@ class TurnRadiusCalibration(Node):
         age_ns = self.get_clock().now().nanoseconds - stamp_ns
         return 0 <= age_ns <= timeout_s * 1e9
 
-    def make_command(self, steering, throttle):
-        command = ManualControl()
+    def make_command(self, speed, yaw_rate):
+        command = make_body_ned_velocity_yaw_rate_command(speed, yaw_rate)
         command.header.stamp = self.get_clock().now().to_msg()
-        command.x = 0.0
-        command.y = steering * 1000.0
-        command.z = throttle * 1000.0
-        command.r = 0.0
         return command
 
     def publish_stop(self):
         self.command_publisher.publish(self.make_command(0.0, 0.0))
 
-    def steering_command(self):
-        magnitude = self.get_parameter(
-            'steering_command_normalized'
-        ).value
-        command = -magnitude if self.direction == 'LEFT' else magnitude
-        if self.get_parameter('steering_reversed').value:
-            command *= -1.0
-        return command
+    def yaw_rate_command(self):
+        magnitude = self.get_parameter('yaw_rate_rad_s').value
+        return yaw_rate_for_direction(self.direction, magnitude)
 
-    def throttle_command(self):
-        if self.get_parameter('dry_run').value:
-            return 0.0
-        return self.get_parameter('throttle_command_normalized').value
+    def forward_speed_command(self):
+        return self.get_parameter('forward_speed_m_s').value
 
     def vehicle_state_valid(self):
         if self.vehicle_state is None or not self.vehicle_state.connected:
             return False, 'MAVROS is not connected to the FCU'
-        if self.vehicle_state.mode.upper() != 'MANUAL':
-            return False, 'Rover must be in MANUAL mode'
-        if self.get_parameter('dry_run').value:
-            if self.vehicle_state.armed:
-                return False, 'Dry-run requires the vehicle to be disarmed'
-        elif not self.vehicle_state.armed:
+        if self.vehicle_state.mode.upper() != 'GUIDED':
+            return False, 'Rover must be in GUIDED mode'
+        if not self.vehicle_state.armed:
             return False, 'Calibration drive requires the vehicle to be armed'
-        elif not self.get_parameter('endpoint_confirmed').value:
-            return False, (
-                'Run the disarmed dry-run first, then set '
-                'endpoint_confirmed:=true'
-            )
         return True, ''
 
     def control_loop(self):
@@ -394,14 +415,7 @@ class TurnRadiusCalibration(Node):
                 self.exit_requested = True
             return
 
-        if self.count_publishers('/mavros/manual_control/send') > 1:
-            self.finish(
-                'Another manual-control publisher is active; '
-                'refusing to drive',
-                successful=False,
-            )
-            return
-        if self.count_publishers('/mavros/setpoint_raw/local') > 0:
+        if self.count_publishers('/mavros/setpoint_raw/local') > 1:
             self.finish(
                 'A navigation setpoint publisher is active; refusing to drive',
                 successful=False,
@@ -426,11 +440,7 @@ class TurnRadiusCalibration(Node):
         state_valid, state_error = self.vehicle_state_valid()
         if self.started_ns is None:
             self.publish_stop()
-            sensor_ready = (
-                True
-                if self.get_parameter('dry_run').value
-                else gps_fresh and heading_fresh
-            )
+            sensor_ready = gps_fresh and heading_fresh
             if sensor_ready and state_fresh and rc_out_fresh and state_valid:
                 self.started_ns = now_ns
                 self.previous_heading = self.heading
@@ -443,11 +453,13 @@ class TurnRadiusCalibration(Node):
                 ]
                 self.get_logger().warning(
                     'Calibration command started: direction=%s, '
-                    'steering_normalized=%.2f, throttle_normalized=%.2f'
+                    'test_mode=%s, requested_yaw_rate_rad_s=%.3f, '
+                    'speed_command_m_s=%.2f'
                     % (
                         self.direction,
-                        self.steering_command(),
-                        self.throttle_command(),
+                        self.test_mode,
+                        self.yaw_rate_command(),
+                        self.forward_speed_command(),
                     )
                 )
             elif now_ns - self.node_started_ns >= (
@@ -473,19 +485,6 @@ class TurnRadiusCalibration(Node):
                 'Steering RC output watchdog timeout', successful=False
             )
             return
-        if self.get_parameter('dry_run').value:
-            if now_ns - self.started_ns >= (
-                self.get_parameter('dry_run_hold_s').value * 1e9
-            ):
-                self.finish(
-                    'Dry-run endpoint hold completed', successful=True
-                )
-                return
-            self.command_publisher.publish(
-                self.make_command(self.steering_command(), 0.0)
-            )
-            return
-
         if not gps_fresh or not heading_fresh:
             missing = []
             if not gps_fresh:
@@ -496,7 +495,15 @@ class TurnRadiusCalibration(Node):
                 f'{"/".join(missing)} watchdog timeout', successful=False
             )
             return
-        if now_ns - self.started_ns >= (
+        if self.test_mode == 'SATURATION' and now_ns - self.started_ns >= (
+            self.get_parameter('saturation_test_duration_s').value * 1e9
+        ):
+            self.finish(
+                'Steering saturation test duration reached',
+                successful=True,
+            )
+            return
+        if self.test_mode == 'CIRCLE' and now_ns - self.started_ns >= (
             self.get_parameter('safety_timeout_s').value * 1e9
         ):
             self.finish(
@@ -504,16 +511,18 @@ class TurnRadiusCalibration(Node):
                 successful=False,
             )
             return
-        if self.accumulated_turn_deg >= self.get_parameter(
-            'target_turn_deg'
-        ).value:
+        if (
+            self.test_mode == 'CIRCLE'
+            and self.accumulated_turn_deg
+            >= self.get_parameter('target_turn_deg').value
+        ):
             self.finish('Target accumulated turn reached', successful=True)
             return
 
         self.command_publisher.publish(
             self.make_command(
-                self.steering_command(),
-                self.throttle_command(),
+                self.forward_speed_command(),
+                self.yaw_rate_command(),
             )
         )
 
@@ -546,17 +555,49 @@ class TurnRadiusCalibration(Node):
                 'x_m',
                 'y_m',
                 'actual_steering_pwm',
+                'requested_yaw_rate_rad_s',
+                'speed_command_m_s',
             ])
             for index, ((latitude, longitude, pwm), (x, y)) in enumerate(
                 zip(self.samples, points)
             ):
-                writer.writerow([index, latitude, longitude, x, y, pwm])
+                writer.writerow([
+                    index,
+                    latitude,
+                    longitude,
+                    x,
+                    y,
+                    pwm,
+                    self.yaw_rate_command(),
+                    self.forward_speed_command(),
+                ])
         return path
 
     def representative_steering_pwm(self):
         if not self.steering_pwm_samples:
             return None
         return int(round(statistics.median(self.steering_pwm_samples)))
+
+    def steering_pwm_range(self):
+        if not self.steering_pwm_samples:
+            return None, None
+        return min(self.steering_pwm_samples), max(self.steering_pwm_samples)
+
+    def steering_endpoint_reached(self):
+        pwm_min, pwm_max = self.steering_pwm_range()
+        if pwm_min is None:
+            return False
+        tolerance = self.get_parameter(
+            'steering_pwm_endpoint_tolerance'
+        ).value
+        return (
+            pwm_min <= self.get_parameter(
+                'steering_pwm_low_endpoint'
+            ).value + tolerance
+            or pwm_max >= self.get_parameter(
+                'steering_pwm_high_endpoint'
+            ).value - tolerance
+        )
 
     def write_constraints_yaml(self, radius, actual_pwm):
         configured_path = str(
@@ -575,13 +616,16 @@ class TurnRadiusCalibration(Node):
         planning_margin = self.get_parameter(
             'planning_radius_margin_ratio'
         ).value
+        actual_pwm_min, actual_pwm_max = self.steering_pwm_range()
         update_vehicle_constraints(
             data,
             self.direction,
             radius,
-            self.steering_command(),
+            self.yaw_rate_command(),
             actual_pwm,
-            self.throttle_command(),
+            self.forward_speed_command(),
+            actual_pwm_min,
+            actual_pwm_max,
             None if planning_margin == -1.0 else planning_margin,
         )
         with path.open('w', encoding='utf-8') as output:
@@ -602,8 +646,7 @@ class TurnRadiusCalibration(Node):
         diameter_result = 'unavailable'
         constraints_result = 'not_written'
         actual_pwm = self.representative_steering_pwm()
-        dry_run = self.get_parameter('dry_run').value
-        if successful and not dry_run:
+        if successful and self.test_mode == 'CIRCLE':
             try:
                 _, _, radius = fit_circle(points)
                 radius_result = f'{radius:.3f}'
@@ -620,17 +663,24 @@ class TurnRadiusCalibration(Node):
                     f'Constraints YAML write failed: {error}'
                 )
         log = self.get_logger().info if successful else self.get_logger().error
+        actual_pwm_min, actual_pwm_max = self.steering_pwm_range()
         log(
-            'turn_radius_result: direction=%s, '
-            'steering_command_normalized=%.2f, actual_steering_pwm=%s, '
-            'speed_command_normalized=%.2f, samples=%d, '
+            'turn_radius_result: test_mode=%s, direction=%s, '
+            'requested_yaw_rate_rad_s=%.3f, actual_steering_pwm=%s, '
+            'actual_steering_pwm_min=%s, actual_steering_pwm_max=%s, '
+            'steering_endpoint_reached=%s, speed_command_m_s=%.2f, '
+            'samples=%d, '
             'accumulated_heading_change_deg=%.1f, radius_m=%s, '
             'diameter_m=%s, trajectory_csv=%s, constraints_yaml=%s'
             % (
+                self.test_mode,
                 self.direction,
-                self.steering_command(),
+                self.yaw_rate_command(),
                 'unavailable' if actual_pwm is None else actual_pwm,
-                self.throttle_command(),
+                'unavailable' if actual_pwm_min is None else actual_pwm_min,
+                'unavailable' if actual_pwm_max is None else actual_pwm_max,
+                self.steering_endpoint_reached(),
+                self.forward_speed_command(),
                 len(points),
                 self.accumulated_turn_deg,
                 radius_result,

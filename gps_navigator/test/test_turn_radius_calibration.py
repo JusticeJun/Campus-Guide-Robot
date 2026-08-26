@@ -4,13 +4,31 @@ from gps_navigator.turn_radius_calibration_node import (
     fit_circle,
     gps_to_local_xy,
     heading_delta_deg,
+    make_body_ned_velocity_yaw_rate_command,
     update_vehicle_constraints,
+    yaw_rate_for_direction,
 )
+from mavros_msgs.msg import PositionTarget
 
 
 def test_heading_delta_wraps_across_north():
     assert heading_delta_deg(2.0, 358.0) == 4.0
     assert heading_delta_deg(358.0, 2.0) == -4.0
+
+
+def test_yaw_rate_direction_matches_body_ned_convention():
+    assert yaw_rate_for_direction('LEFT', 2.5) == 2.5
+    assert yaw_rate_for_direction('RIGHT', 2.5) == -2.5
+
+
+def test_calibration_command_uses_production_body_ned_pipeline():
+    command = make_body_ned_velocity_yaw_rate_command(0.20, 2.5)
+    assert command.coordinate_frame == PositionTarget.FRAME_BODY_NED
+    assert command.velocity.x == 0.20
+    assert command.yaw_rate == 2.5
+    assert command.type_mask & PositionTarget.IGNORE_YAW
+    assert not command.type_mask & PositionTarget.IGNORE_VX
+    assert not command.type_mask & PositionTarget.IGNORE_YAW_RATE
 
 
 def test_gps_to_local_xy_uses_east_and_north_axes():
@@ -61,10 +79,22 @@ def test_vehicle_constraints_apply_configured_planning_margin():
         }
     }
     update_vehicle_constraints(
-        data, 'LEFT', 2.5, -1.0, 1100, 0.15, 0.10
+        data,
+        'LEFT',
+        2.5,
+        1.5,
+        1100,
+        0.20,
+        planning_radius_margin_ratio=0.10,
     )
     update_vehicle_constraints(
-        data, 'RIGHT', 3.0, 1.0, 1900, 0.15, 0.10
+        data,
+        'RIGHT',
+        3.0,
+        -1.5,
+        1900,
+        0.20,
+        planning_radius_margin_ratio=0.10,
     )
     constraints = data['vehicle_constraints']
     assert constraints['planning_radius_margin_ratio'] == 0.10
@@ -74,3 +104,11 @@ def test_vehicle_constraints_apply_configured_planning_margin():
     assert constraints['maximum_planning_curvature_1_per_m'] == 0.30303
     assert 'minimum_safe_turn_radius_m' not in constraints
     assert 'maximum_curvature_1_per_m' not in constraints
+    assert data['calibration']['left'] == {
+        'command_pipeline': 'guided_body_ned_velocity_yaw_rate',
+        'requested_yaw_rate_rad_s': 1.5,
+        'actual_steering_pwm': 1100,
+        'actual_steering_pwm_min': None,
+        'actual_steering_pwm_max': None,
+        'speed_command_m_s': 0.20,
+    }
