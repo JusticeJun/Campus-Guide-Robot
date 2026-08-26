@@ -33,6 +33,8 @@ setup(
         'console_scripts': [
             'path_planner = gps_navigator.path_planner_node:main',
             'route_manager = gps_navigator.route_manager_node:main',
+            'turn_radius_calibration = '
+            'gps_navigator.turn_radius_calibration_node:main',
             'waypoint_follower = gps_navigator.waypoint_follower_node:main',
         ],
     },
