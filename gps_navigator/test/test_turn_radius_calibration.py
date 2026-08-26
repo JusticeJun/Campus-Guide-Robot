@@ -39,12 +39,38 @@ def test_circle_fit_recovers_known_radius():
     assert math.isclose(fitted_radius, radius, abs_tol=1e-9)
 
 
-def test_vehicle_constraints_use_more_conservative_turn_radius():
+def test_vehicle_constraints_separate_physical_and_unset_planning_limits():
     data = {}
     update_vehicle_constraints(data, 'LEFT', 2.5, -1.0, 1100, 0.15)
     update_vehicle_constraints(data, 'RIGHT', 3.0, 1.0, 1900, 0.15)
     constraints = data['vehicle_constraints']
     assert constraints['minimum_turn_radius_left_m'] == 2.5
     assert constraints['minimum_turn_radius_right_m'] == 3.0
-    assert constraints['minimum_safe_turn_radius_m'] == 3.0
-    assert constraints['maximum_curvature_1_per_m'] == 0.333333
+    assert constraints['physical_min_turn_radius_m'] == 3.0
+    assert constraints['planning_radius_margin_ratio'] is None
+    assert constraints['planning_min_turn_radius_m'] is None
+    assert constraints['maximum_physical_curvature_1_per_m'] == 0.333333
+    assert constraints['maximum_planning_curvature_1_per_m'] is None
+
+
+def test_vehicle_constraints_apply_configured_planning_margin():
+    data = {
+        'vehicle_constraints': {
+            'minimum_safe_turn_radius_m': 3.0,
+            'maximum_curvature_1_per_m': 0.333333,
+        }
+    }
+    update_vehicle_constraints(
+        data, 'LEFT', 2.5, -1.0, 1100, 0.15, 0.10
+    )
+    update_vehicle_constraints(
+        data, 'RIGHT', 3.0, 1.0, 1900, 0.15, 0.10
+    )
+    constraints = data['vehicle_constraints']
+    assert constraints['planning_radius_margin_ratio'] == 0.10
+    assert constraints['physical_min_turn_radius_m'] == 3.0
+    assert constraints['planning_min_turn_radius_m'] == 3.3
+    assert constraints['maximum_physical_curvature_1_per_m'] == 0.333333
+    assert constraints['maximum_planning_curvature_1_per_m'] == 0.30303
+    assert 'minimum_safe_turn_radius_m' not in constraints
+    assert 'maximum_curvature_1_per_m' not in constraints

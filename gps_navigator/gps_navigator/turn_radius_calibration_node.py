@@ -94,10 +94,22 @@ def fit_circle(points):
 
 def update_vehicle_constraints(
     data, direction, radius, steering, actual_pwm, speed,
+    planning_radius_margin_ratio=None,
 ):
     constraints = data.setdefault('vehicle_constraints', {})
+    constraints.pop('minimum_safe_turn_radius_m', None)
+    constraints.pop('maximum_curvature_1_per_m', None)
     side = direction.lower()
     constraints[f'minimum_turn_radius_{side}_m'] = round(radius, 3)
+    constraints['planning_radius_margin_ratio'] = (
+        None
+        if planning_radius_margin_ratio is None
+        else planning_radius_margin_ratio
+    )
+    constraints['physical_min_turn_radius_m'] = None
+    constraints['planning_min_turn_radius_m'] = None
+    constraints['maximum_physical_curvature_1_per_m'] = None
+    constraints['maximum_planning_curvature_1_per_m'] = None
     calibration = data.setdefault('calibration', {})
     calibration[side] = {
         'steering_command_normalized': steering,
@@ -107,11 +119,23 @@ def update_vehicle_constraints(
     left_radius = constraints.get('minimum_turn_radius_left_m')
     right_radius = constraints.get('minimum_turn_radius_right_m')
     if left_radius is not None and right_radius is not None:
-        safe_radius = max(left_radius, right_radius)
-        constraints['minimum_safe_turn_radius_m'] = round(safe_radius, 3)
-        constraints['maximum_curvature_1_per_m'] = round(
-            1.0 / safe_radius, 6
+        physical_radius = max(left_radius, right_radius)
+        constraints['physical_min_turn_radius_m'] = round(
+            physical_radius, 3
         )
+        constraints['maximum_physical_curvature_1_per_m'] = round(
+            1.0 / physical_radius, 6
+        )
+        if planning_radius_margin_ratio is not None:
+            planning_radius = physical_radius * (
+                1.0 + planning_radius_margin_ratio
+            )
+            constraints['planning_min_turn_radius_m'] = round(
+                planning_radius, 3
+            )
+            constraints['maximum_planning_curvature_1_per_m'] = round(
+                1.0 / planning_radius, 6
+            )
     return data
 
 
@@ -139,6 +163,7 @@ class TurnRadiusCalibration(Node):
         self.declare_parameter(
             'constraints_yaml', '/tmp/vehicle_turn_constraints.yaml'
         )
+        self.declare_parameter('planning_radius_margin_ratio', -1.0)
         self.declare_parameter('steering_output_channel', 1)
 
         self.direction = str(
@@ -180,6 +205,14 @@ class TurnRadiusCalibration(Node):
         ).value
         if not isinstance(steering_channel, int) or steering_channel < 1:
             raise ValueError('steering_output_channel must be a positive int')
+        planning_margin = self.get_parameter(
+            'planning_radius_margin_ratio'
+        ).value
+        if planning_margin < 0.0 and planning_margin != -1.0:
+            raise ValueError(
+                'planning_radius_margin_ratio must be non-negative or -1.0 '
+                'for unset'
+            )
 
         self.gps = None
         self.heading = None
@@ -539,6 +572,9 @@ class TurnRadiusCalibration(Node):
                     data = yaml.safe_load(source) or {}
             except (OSError, yaml.YAMLError):
                 data = {}
+        planning_margin = self.get_parameter(
+            'planning_radius_margin_ratio'
+        ).value
         update_vehicle_constraints(
             data,
             self.direction,
@@ -546,6 +582,7 @@ class TurnRadiusCalibration(Node):
             self.steering_command(),
             actual_pwm,
             self.throttle_command(),
+            None if planning_margin == -1.0 else planning_margin,
         )
         with path.open('w', encoding='utf-8') as output:
             yaml.safe_dump(data, output, sort_keys=False)
