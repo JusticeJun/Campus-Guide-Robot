@@ -370,6 +370,7 @@ git push --force-with-lease
 - `path_planner`: MAVROS GPS 위치에서 가장 가까운 graph waypoint를 출발점으로 정하고, 요청된 목적지까지 Dijkstra 최단경로를 계산해 route를 발행한다. 목적지는 waypoint ID 또는 고유한 표시 이름으로 지정한다.
 - `route_manager`: 계획된 route와 현재 GPS를 받아 active waypoint를 관리한다. 도달 반경 안에 들어오면 다음 waypoint로 진행하고, 다음 목표 좌표·route 상태·완료 상태와 heartbeat를 발행한다.
 - `waypoint_follower`: MAVROS의 GPS와 compass heading, route manager의 active waypoint·완료 상태·heartbeat를 결합한다. 목표 bearing과 signed heading error를 계산해 전진 속도와 yaw-rate setpoint를 만들고 Pixhawk 방향으로 보낸다. 입력이 없거나 오래되었거나 route가 끝난 경우 정지 명령을 보낸다.
+- `turn_radius_calibration`: production navigation과 분리된 차량 보정용 실행 파일이다. MANUAL 모드의 normalized steering/throttle 입력으로 좌·우 물리 조향 한계의 GPS 궤적을 수집하고 회전반경을 계산한다. 실제 주행 전 disarmed dry-run과 MAVROS 상태·servo 출력 watchdog을 요구한다.
 - `geo_utils`: 좌표 유효성 검사와 haversine 거리 계산을 planner와 route manager가 공유한다.
 
 ## 핵심 데이터 흐름과 외부 연결
@@ -389,7 +390,7 @@ route와 현재/완료 상태에는 late subscriber도 최신 값을 받을 수 
 
 ## 현재 구현 범위와 설계 방향
 
-현재 구현 범위는 YAML graph 로딩·검증, 현재 위치 기반 시작점 선택, 최단경로 계산, route 진행 및 waypoint 도달 판정, 구간별 정지/재출발, GPS bearing 기반 조향 명령과 입력 watchdog이다. 장애물 회피, 동적 graph 갱신, Pixhawk mode 전환·arming, 저수준 servo/PWM 설정은 이 패키지의 현재 책임이 아니다.
+현재 구현 범위는 YAML graph 로딩·검증, 현재 위치 기반 시작점 선택, 최단경로 계산, route 진행 및 waypoint 도달 판정, 구간별 정지/재출발, GPS bearing 기반 조향 명령과 입력 watchdog이다. 독립 calibration 실행 파일은 좌·우 최소 회전반경과 실제 steering PWM을 측정하지만 production 주행에는 참여하지 않는다. 장애물 회피, 동적 graph 갱신, Pixhawk mode 전환·arming, 저수준 servo/PWM 설정은 이 패키지의 현재 책임이 아니다.
 
 계획(`path_planner`), 진행 상태(`route_manager`), 차량 명령(`waypoint_follower`)의 책임을 분리한다. 상위 node는 Pixhawk servo channel이나 PWM을 직접 구동하지 않고 MAVROS/MAVLink setpoint를 사용하며, 실제 조향 mixer·servo channel·PWM 범위는 Pixhawk/ArduRover 설정의 책임으로 유지한다. 기존 topic과 route message 형식은 node 사이의 공용 interface이므로 기능 추가 시 불필요하게 변경하지 않는다.
 
