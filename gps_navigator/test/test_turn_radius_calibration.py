@@ -4,6 +4,7 @@ from gps_navigator.turn_radius_calibration_node import (
     fit_circle,
     gps_to_local_xy,
     heading_delta_deg,
+    update_vehicle_constraints,
 )
 
 
@@ -36,3 +37,14 @@ def test_circle_fit_recovers_known_radius():
     assert math.isclose(fitted_x, center_x, abs_tol=1e-9)
     assert math.isclose(fitted_y, center_y, abs_tol=1e-9)
     assert math.isclose(fitted_radius, radius, abs_tol=1e-9)
+
+
+def test_vehicle_constraints_use_more_conservative_turn_radius():
+    data = {}
+    update_vehicle_constraints(data, 'LEFT', 2.5, -1.0, 1100, 0.15)
+    update_vehicle_constraints(data, 'RIGHT', 3.0, 1.0, 1900, 0.15)
+    constraints = data['vehicle_constraints']
+    assert constraints['minimum_turn_radius_left_m'] == 2.5
+    assert constraints['minimum_turn_radius_right_m'] == 3.0
+    assert constraints['minimum_safe_turn_radius_m'] == 3.0
+    assert constraints['maximum_curvature_1_per_m'] == 0.333333
