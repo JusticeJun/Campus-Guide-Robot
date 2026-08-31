@@ -2,19 +2,51 @@ import csv
 import math
 from pathlib import Path
 import statistics
+import struct
 import time
 
+from geometry_msgs.msg import TwistStamped
 import rclpy
-from mavros_msgs.msg import PositionTarget, RCOut, State
+from mavros_msgs.msg import Mavlink, PositionTarget, RCOut, State
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from rclpy.signals import SignalHandlerOptions
-from sensor_msgs.msg import NavSatFix, NavSatStatus
+from sensor_msgs.msg import Imu, NavSatFix, NavSatStatus
 from std_msgs.msg import Float64
 import yaml
 
 
 EARTH_RADIUS_M = 6371000.0
+DIAGNOSTIC_FIELDS = [
+    'monotonic_time_ns',
+    'ros_time_ns',
+    'message_time_ns',
+    'source',
+    'event',
+    'publish_sequence',
+    'requested_velocity_x_m_s',
+    'requested_yaw_rate_rad_s',
+    'actual_forward_speed_m_s',
+    'fcu_target_velocity_x_m_s',
+    'fcu_target_yaw_rate_rad_s',
+    'imu_yaw_rate_rad_s',
+    'compass_heading_deg',
+    'heading_derived_yaw_rate_rad_s',
+    'steering_servo_pwm',
+    'throttle_servo_pwm',
+    'pid_tuning_axis',
+    'pid_tuning_desired',
+    'pid_tuning_achieved',
+    'pid_tuning_ff',
+    'pid_tuning_p',
+    'pid_tuning_i',
+    'pid_tuning_d',
+    'vehicle_mode',
+    'armed',
+    'setpoint_publisher_count',
+]
+
+PID_TUNING_MESSAGE_ID = 194
 
 
 def make_body_ned_velocity_yaw_rate_command(speed, yaw_rate):
@@ -42,6 +74,49 @@ def yaw_rate_for_direction(direction, magnitude):
 def heading_delta_deg(current, previous):
     """Return the shortest signed compass-heading change."""
     return (current - previous + 180.0) % 360.0 - 180.0
+
+
+def compass_delta_to_ros_yaw_rate(current, previous, elapsed_s):
+    """Derive ROS CCW-positive yaw rate from clockwise compass heading."""
+    if elapsed_s <= 0.0:
+        return None
+    return -math.radians(heading_delta_deg(current, previous)) / elapsed_s
+
+
+def message_stamp_ns(msg):
+    header = getattr(msg, 'header', None)
+    stamp = getattr(header, 'stamp', None)
+    if stamp is None:
+        return None
+    return stamp.sec * 1_000_000_000 + stamp.nanosec
+
+
+def decode_pid_tuning(msg):
+    """Decode MAVLink PID_TUNING without a generated Python dialect."""
+    if (
+        msg.msgid != PID_TUNING_MESSAGE_ID
+        or msg.framing_status != Mavlink.FRAMING_OK
+        or msg.len < 25
+    ):
+        return None
+    payload = b''.join(
+        int(word).to_bytes(8, byteorder='little', signed=False)
+        for word in msg.payload64
+    )[:msg.len]
+    if len(payload) < 25:
+        return None
+    desired, achieved, ff, p, i, d, axis = struct.unpack_from(
+        '<6fB', payload
+    )
+    return {
+        'axis': axis,
+        'desired': desired,
+        'achieved': achieved,
+        'ff': ff,
+        'p': p,
+        'i': i,
+        'd': d,
+    }
 
 
 def gps_to_local_xy(latitude, longitude, origin_latitude, origin_longitude):
@@ -184,11 +259,13 @@ class TurnRadiusCalibration(Node):
         self.declare_parameter('max_heading_step_deg', 45.0)
         self.declare_parameter('stop_publish_duration_s', 1.0)
         self.declare_parameter('output_csv', '')
+        self.declare_parameter('diagnostic_csv', '')
         self.declare_parameter(
             'constraints_yaml', '/tmp/vehicle_turn_constraints.yaml'
         )
         self.declare_parameter('planning_radius_margin_ratio', -1.0)
         self.declare_parameter('steering_output_channel', 1)
+        self.declare_parameter('throttle_output_channel', 3)
         self.declare_parameter('steering_pwm_low_endpoint', 1100)
         self.declare_parameter('steering_pwm_high_endpoint', 1900)
         self.declare_parameter('steering_pwm_endpoint_tolerance', 20)
@@ -219,11 +296,12 @@ class TurnRadiusCalibration(Node):
         ):
             if self.get_parameter(name).value <= 0.0:
                 raise ValueError(f'{name} must be positive')
-        steering_channel = self.get_parameter(
-            'steering_output_channel'
-        ).value
-        if not isinstance(steering_channel, int) or steering_channel < 1:
-            raise ValueError('steering_output_channel must be a positive int')
+        for channel_name in (
+            'steering_output_channel', 'throttle_output_channel'
+        ):
+            channel = self.get_parameter(channel_name).value
+            if not isinstance(channel, int) or channel < 1:
+                raise ValueError(f'{channel_name} must be a positive int')
         low_endpoint = self.get_parameter(
             'steering_pwm_low_endpoint'
         ).value
@@ -261,7 +339,19 @@ class TurnRadiusCalibration(Node):
         self.vehicle_state = None
         self.last_state_ns = None
         self.actual_steering_pwm = None
+        self.actual_throttle_pwm = None
+        self.actual_forward_speed = None
         self.last_rc_out_ns = None
+        self.fcu_target_velocity_x = None
+        self.fcu_target_yaw_rate = None
+        self.imu_yaw_rate = None
+        self.heading_derived_yaw_rate = None
+        self.derivative_heading = None
+        self.derivative_heading_monotonic_ns = None
+        self.requested_velocity_x = None
+        self.requested_yaw_rate = None
+        self.publish_sequence = 0
+        self.pid_tuning = None
         self.steering_pwm_samples = []
         self.previous_heading = None
         self.accumulated_turn_deg = 0.0
@@ -272,6 +362,10 @@ class TurnRadiusCalibration(Node):
         self.finish_started_ns = None
         self.result_reported = False
         self.exit_requested = False
+        self.trace_write_failed = False
+        self.diagnostic_output = None
+        self.diagnostic_writer = None
+        self.diagnostic_path = self.open_diagnostic_trace()
 
         qos = QoSProfile(depth=10)
         qos.reliability = ReliabilityPolicy.BEST_EFFORT
@@ -293,6 +387,30 @@ class TurnRadiusCalibration(Node):
         self.create_subscription(
             RCOut, '/mavros/rc/out', self.rc_out_callback, qos
         )
+        self.create_subscription(
+            Imu, '/mavros/imu/data', self.imu_callback, qos
+        )
+        self.create_subscription(
+            TwistStamped,
+            '/mavros/local_position/velocity_body',
+            self.velocity_body_callback,
+            qos,
+        )
+        self.create_subscription(
+            Mavlink, '/mavros/mavlink/from', self.mavlink_callback, qos
+        )
+        self.create_subscription(
+            PositionTarget,
+            '/mavros/setpoint_raw/target_local',
+            self.target_local_callback,
+            qos,
+        )
+        self.create_subscription(
+            PositionTarget,
+            '/mavros/setpoint_raw/local',
+            self.local_setpoint_callback,
+            qos,
+        )
         self.command_publisher = self.create_publisher(
             PositionTarget, '/mavros/setpoint_raw/local', 10
         )
@@ -301,14 +419,122 @@ class TurnRadiusCalibration(Node):
             'Production-pipeline turn-radius calibration ready: mode=%s, '
             'direction=%s, speed=%.2f m/s, yaw_rate=%.3f rad/s. '
             'Select GUIDED mode, arm the Rover, and do not run '
-            'waypoint_follower at the same time.'
+            'another vehicle-command publisher at the same time. '
+            'diagnostic_csv=%s'
             % (
                 self.test_mode,
                 self.direction,
                 self.forward_speed_command(),
                 self.yaw_rate_command(),
+                self.diagnostic_path,
             )
         )
+
+    def open_diagnostic_trace(self):
+        configured = str(
+            self.get_parameter('diagnostic_csv').value
+        ).strip()
+        path = Path(configured) if configured else Path(
+            '/tmp/turn_radius_trace_%s_%s.csv'
+            % (self.direction.lower(), time.strftime('%Y%m%d_%H%M%S'))
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.diagnostic_output = path.open(
+            'w', newline='', encoding='utf-8', buffering=1
+        )
+        self.diagnostic_writer = csv.DictWriter(
+            self.diagnostic_output, fieldnames=DIAGNOSTIC_FIELDS
+        )
+        self.diagnostic_writer.writeheader()
+        return path
+
+    def record_trace(
+        self,
+        source,
+        event,
+        message_time=None,
+        receipt_monotonic_ns=None,
+        receipt_ros_time_ns=None,
+        **overrides,
+    ):
+        if self.diagnostic_writer is None or self.trace_write_failed:
+            return
+        state = self.vehicle_state
+        row = {
+            'monotonic_time_ns': (
+                time.monotonic_ns()
+                if receipt_monotonic_ns is None
+                else receipt_monotonic_ns
+            ),
+            'ros_time_ns': (
+                self.get_clock().now().nanoseconds
+                if receipt_ros_time_ns is None
+                else receipt_ros_time_ns
+            ),
+            'message_time_ns': '' if message_time is None else message_time,
+            'source': source,
+            'event': event,
+            'publish_sequence': self.publish_sequence,
+            'requested_velocity_x_m_s': self.requested_velocity_x,
+            'requested_yaw_rate_rad_s': self.requested_yaw_rate,
+            'actual_forward_speed_m_s': self.actual_forward_speed,
+            'fcu_target_velocity_x_m_s': self.fcu_target_velocity_x,
+            'fcu_target_yaw_rate_rad_s': self.fcu_target_yaw_rate,
+            'imu_yaw_rate_rad_s': self.imu_yaw_rate,
+            'compass_heading_deg': self.heading,
+            'heading_derived_yaw_rate_rad_s': (
+                self.heading_derived_yaw_rate
+            ),
+            'steering_servo_pwm': self.actual_steering_pwm,
+            'throttle_servo_pwm': self.actual_throttle_pwm,
+            'pid_tuning_axis': (
+                None if self.pid_tuning is None
+                else self.pid_tuning['axis']
+            ),
+            'pid_tuning_desired': (
+                None if self.pid_tuning is None
+                else self.pid_tuning['desired']
+            ),
+            'pid_tuning_achieved': (
+                None if self.pid_tuning is None
+                else self.pid_tuning['achieved']
+            ),
+            'pid_tuning_ff': (
+                None if self.pid_tuning is None else self.pid_tuning['ff']
+            ),
+            'pid_tuning_p': (
+                None if self.pid_tuning is None else self.pid_tuning['p']
+            ),
+            'pid_tuning_i': (
+                None if self.pid_tuning is None else self.pid_tuning['i']
+            ),
+            'pid_tuning_d': (
+                None if self.pid_tuning is None else self.pid_tuning['d']
+            ),
+            'vehicle_mode': None if state is None else state.mode,
+            'armed': None if state is None else state.armed,
+            'setpoint_publisher_count': self.count_publishers(
+                '/mavros/setpoint_raw/local'
+            ),
+        }
+        row.update(overrides)
+        try:
+            self.diagnostic_writer.writerow({
+                key: '' if value is None else value
+                for key, value in row.items()
+            })
+        except OSError as error:
+            self.trace_write_failed = True
+            self.get_logger().error(
+                f'Diagnostic trace write failed; stopping: {error}'
+            )
+
+    def close_diagnostic_trace(self):
+        if self.diagnostic_output is not None:
+            self.diagnostic_output.flush()
+            self.diagnostic_output.close()
+            self.diagnostic_output = None
+            self.diagnostic_writer = None
 
     @staticmethod
     def valid_gps(msg):
@@ -321,6 +547,12 @@ class TurnRadiusCalibration(Node):
         )
 
     def gps_callback(self, msg):
+        receipt_monotonic_ns = time.monotonic_ns()
+        receipt_ros_time_ns = self.get_clock().now().nanoseconds
+        self.record_trace(
+            'gps', 'received', message_stamp_ns(msg),
+            receipt_monotonic_ns, receipt_ros_time_ns
+        )
         if not self.valid_gps(msg):
             self.gps = None
             self.last_gps_ns = None
@@ -335,6 +567,8 @@ class TurnRadiusCalibration(Node):
             )
 
     def heading_callback(self, msg):
+        receipt_monotonic_ns = time.monotonic_ns()
+        receipt_ros_time_ns = self.get_clock().now().nanoseconds
         if not math.isfinite(msg.data):
             self.heading = None
             self.last_heading_ns = None
@@ -342,7 +576,21 @@ class TurnRadiusCalibration(Node):
                 self.finish('Invalid compass heading', successful=False)
             return
         self.heading = msg.data % 360.0
-        self.last_heading_ns = self.get_clock().now().nanoseconds
+        if self.derivative_heading is not None:
+            elapsed_s = (
+                receipt_monotonic_ns - self.derivative_heading_monotonic_ns
+            ) / 1e9
+            self.heading_derived_yaw_rate = compass_delta_to_ros_yaw_rate(
+                self.heading, self.derivative_heading, elapsed_s
+            )
+        self.derivative_heading = self.heading
+        self.derivative_heading_monotonic_ns = receipt_monotonic_ns
+        self.last_heading_ns = receipt_ros_time_ns
+        self.record_trace(
+            'compass_heading', 'received',
+            receipt_monotonic_ns=receipt_monotonic_ns,
+            receipt_ros_time_ns=receipt_ros_time_ns,
+        )
         if self.started_ns is None or self.finishing:
             return
         if self.previous_heading is not None:
@@ -359,20 +607,94 @@ class TurnRadiusCalibration(Node):
         self.previous_heading = self.heading
 
     def state_callback(self, msg):
+        receipt_monotonic_ns = time.monotonic_ns()
+        receipt_ros_time_ns = self.get_clock().now().nanoseconds
         self.vehicle_state = msg
-        self.last_state_ns = self.get_clock().now().nanoseconds
+        self.last_state_ns = receipt_ros_time_ns
+        self.record_trace(
+            'state', 'received', message_stamp_ns(msg),
+            receipt_monotonic_ns, receipt_ros_time_ns
+        )
 
     def rc_out_callback(self, msg):
-        channel_index = (
+        receipt_monotonic_ns = time.monotonic_ns()
+        receipt_ros_time_ns = self.get_clock().now().nanoseconds
+        steering_index = (
             self.get_parameter('steering_output_channel').value - 1
         )
-        if channel_index >= len(msg.channels):
+        throttle_index = (
+            self.get_parameter('throttle_output_channel').value - 1
+        )
+        if steering_index >= len(msg.channels):
             self.actual_steering_pwm = None
+        else:
+            self.actual_steering_pwm = msg.channels[steering_index]
+            self.last_rc_out_ns = receipt_ros_time_ns
+            if self.started_ns is not None and not self.finishing:
+                self.steering_pwm_samples.append(self.actual_steering_pwm)
+        self.actual_throttle_pwm = (
+            None if throttle_index >= len(msg.channels)
+            else msg.channels[throttle_index]
+        )
+        self.record_trace(
+            'rc_out', 'received', message_stamp_ns(msg),
+            receipt_monotonic_ns, receipt_ros_time_ns
+        )
+
+    def imu_callback(self, msg):
+        receipt_monotonic_ns = time.monotonic_ns()
+        receipt_ros_time_ns = self.get_clock().now().nanoseconds
+        yaw_rate = msg.angular_velocity.z
+        self.imu_yaw_rate = yaw_rate if math.isfinite(yaw_rate) else None
+        self.record_trace(
+            'imu', 'received', message_stamp_ns(msg),
+            receipt_monotonic_ns, receipt_ros_time_ns
+        )
+
+    def velocity_body_callback(self, msg):
+        receipt_monotonic_ns = time.monotonic_ns()
+        receipt_ros_time_ns = self.get_clock().now().nanoseconds
+        speed = msg.twist.linear.x
+        self.actual_forward_speed = speed if math.isfinite(speed) else None
+        self.record_trace(
+            'velocity_body', 'received', message_stamp_ns(msg),
+            receipt_monotonic_ns, receipt_ros_time_ns
+        )
+
+    def mavlink_callback(self, msg):
+        tuning = decode_pid_tuning(msg)
+        if tuning is None:
             return
-        self.actual_steering_pwm = msg.channels[channel_index]
-        self.last_rc_out_ns = self.get_clock().now().nanoseconds
-        if self.started_ns is not None and not self.finishing:
-            self.steering_pwm_samples.append(self.actual_steering_pwm)
+        receipt_monotonic_ns = time.monotonic_ns()
+        receipt_ros_time_ns = self.get_clock().now().nanoseconds
+        self.pid_tuning = tuning
+        self.record_trace(
+            'pid_tuning', 'received', message_stamp_ns(msg),
+            receipt_monotonic_ns, receipt_ros_time_ns
+        )
+
+    def target_local_callback(self, msg):
+        receipt_monotonic_ns = time.monotonic_ns()
+        receipt_ros_time_ns = self.get_clock().now().nanoseconds
+        self.fcu_target_velocity_x = msg.velocity.x
+        self.fcu_target_yaw_rate = msg.yaw_rate
+        self.record_trace(
+            'target_local', 'received', message_stamp_ns(msg),
+            receipt_monotonic_ns, receipt_ros_time_ns
+        )
+
+    def local_setpoint_callback(self, msg):
+        receipt_monotonic_ns = time.monotonic_ns()
+        receipt_ros_time_ns = self.get_clock().now().nanoseconds
+        self.record_trace(
+            'local_setpoint',
+            'received',
+            message_stamp_ns(msg),
+            receipt_monotonic_ns,
+            receipt_ros_time_ns,
+            requested_velocity_x_m_s=msg.velocity.x,
+            requested_yaw_rate_rad_s=msg.yaw_rate,
+        )
 
     def input_fresh(self, stamp_ns, timeout_s):
         if stamp_ns is None:
@@ -385,8 +707,17 @@ class TurnRadiusCalibration(Node):
         command.header.stamp = self.get_clock().now().to_msg()
         return command
 
-    def publish_stop(self):
-        self.command_publisher.publish(self.make_command(0.0, 0.0))
+    def publish_command(self, command, event):
+        self.publish_sequence += 1
+        self.requested_velocity_x = command.velocity.x
+        self.requested_yaw_rate = command.yaw_rate
+        self.command_publisher.publish(command)
+        self.record_trace(
+            'command_publish', event, message_stamp_ns(command)
+        )
+
+    def publish_stop(self, event='stop_command'):
+        self.publish_command(self.make_command(0.0, 0.0), event)
 
     def yaw_rate_command(self):
         magnitude = self.get_parameter('yaw_rate_rad_s').value
@@ -407,12 +738,18 @@ class TurnRadiusCalibration(Node):
     def control_loop(self):
         now_ns = self.get_clock().now().nanoseconds
         if self.finishing:
-            self.publish_stop()
+            self.publish_stop('finishing_stop')
             stop_duration_ns = (
                 self.get_parameter('stop_publish_duration_s').value * 1e9
             )
             if now_ns - self.finish_started_ns >= stop_duration_ns:
                 self.exit_requested = True
+            return
+
+        if self.trace_write_failed:
+            self.finish(
+                'Diagnostic trace is unavailable', successful=False
+            )
             return
 
         if self.count_publishers('/mavros/setpoint_raw/local') > 1:
@@ -439,7 +776,7 @@ class TurnRadiusCalibration(Node):
         )
         state_valid, state_error = self.vehicle_state_valid()
         if self.started_ns is None:
-            self.publish_stop()
+            self.publish_stop('startup_stop')
             sensor_ready = gps_fresh and heading_fresh
             if sensor_ready and state_fresh and rc_out_fresh and state_valid:
                 self.started_ns = now_ns
@@ -519,11 +856,12 @@ class TurnRadiusCalibration(Node):
             self.finish('Target accumulated turn reached', successful=True)
             return
 
-        self.command_publisher.publish(
+        self.publish_command(
             self.make_command(
                 self.forward_speed_command(),
                 self.yaw_rate_command(),
-            )
+            ),
+            'drive_command',
         )
 
     def local_points(self):
@@ -671,7 +1009,8 @@ class TurnRadiusCalibration(Node):
             'steering_endpoint_reached=%s, speed_command_m_s=%.2f, '
             'samples=%d, '
             'accumulated_heading_change_deg=%.1f, radius_m=%s, '
-            'diameter_m=%s, trajectory_csv=%s, constraints_yaml=%s'
+            'diameter_m=%s, trajectory_csv=%s, diagnostic_csv=%s, '
+            'constraints_yaml=%s'
             % (
                 self.test_mode,
                 self.direction,
@@ -686,6 +1025,7 @@ class TurnRadiusCalibration(Node):
                 radius_result,
                 diameter_result,
                 csv_result,
+                self.diagnostic_path,
                 constraints_result,
             )
         )
@@ -695,7 +1035,8 @@ class TurnRadiusCalibration(Node):
             return
         self.finishing = True
         self.finish_started_ns = self.get_clock().now().nanoseconds
-        self.publish_stop()
+        self.record_trace('lifecycle', 'finish_requested')
+        self.publish_stop('finish_stop')
         log = self.get_logger().info if successful else self.get_logger().error
         log(f'Stopping calibration: {reason}')
         self.report_result(successful)
@@ -714,11 +1055,13 @@ def main(args=None):
         node.finish('Interrupted by user', successful=False)
         end_time = time.monotonic() + 1.0
         while rclpy.ok() and time.monotonic() < end_time:
-            node.publish_stop()
+            node.publish_stop('ctrl_c_stop')
             rclpy.spin_once(node, timeout_sec=0.1)
     finally:
         if rclpy.ok():
-            node.publish_stop()
+            node.publish_stop('final_stop')
+            rclpy.spin_once(node, timeout_sec=0.1)
+        node.close_diagnostic_trace()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

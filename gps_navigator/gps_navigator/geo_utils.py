@@ -36,3 +36,22 @@ def haversine_distance(lat1, lon1, lat2, lon2):
     return EARTH_RADIUS_M * 2.0 * math.atan2(
         math.sqrt(a), math.sqrt(1.0 - a)
     )
+
+
+def gps_to_local_xy(latitude, longitude, origin_latitude, origin_longitude):
+    """Project WGS84 coordinates to a local east/north tangent plane."""
+    latitude_rad = math.radians(latitude)
+    origin_latitude_rad = math.radians(origin_latitude)
+    x = EARTH_RADIUS_M * math.radians(longitude - origin_longitude) * math.cos(
+        0.5 * (latitude_rad + origin_latitude_rad)
+    )
+    y = EARTH_RADIUS_M * math.radians(latitude - origin_latitude)
+    return x, y
+
+
+def compass_heading_to_yaw(heading_deg):
+    """Convert clockwise-from-north compass heading to ROS ENU yaw."""
+    return math.atan2(
+        math.sin(math.radians(90.0 - heading_deg)),
+        math.cos(math.radians(90.0 - heading_deg)),
+    )

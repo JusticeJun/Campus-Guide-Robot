@@ -1,6 +1,12 @@
 import math
+import struct
+
+from mavros_msgs.msg import Mavlink
 
 from gps_navigator.turn_radius_calibration_node import (
+    DIAGNOSTIC_FIELDS,
+    compass_delta_to_ros_yaw_rate,
+    decode_pid_tuning,
     fit_circle,
     gps_to_local_xy,
     heading_delta_deg,
@@ -14,6 +20,69 @@ from mavros_msgs.msg import PositionTarget
 def test_heading_delta_wraps_across_north():
     assert heading_delta_deg(2.0, 358.0) == 4.0
     assert heading_delta_deg(358.0, 2.0) == -4.0
+
+
+def test_compass_rate_is_converted_to_ros_yaw_sign_and_wraps():
+    assert math.isclose(
+        compass_delta_to_ros_yaw_rate(2.0, 358.0, 1.0),
+        -math.radians(4.0),
+    )
+    assert math.isclose(
+        compass_delta_to_ros_yaw_rate(358.0, 2.0, 1.0),
+        math.radians(4.0),
+    )
+    assert compass_delta_to_ros_yaw_rate(2.0, 358.0, 0.0) is None
+
+
+def test_diagnostic_trace_contains_required_control_path_fields():
+    required = {
+        'monotonic_time_ns',
+        'ros_time_ns',
+        'source',
+        'event',
+        'publish_sequence',
+        'requested_velocity_x_m_s',
+        'requested_yaw_rate_rad_s',
+        'actual_forward_speed_m_s',
+        'fcu_target_velocity_x_m_s',
+        'fcu_target_yaw_rate_rad_s',
+        'imu_yaw_rate_rad_s',
+        'compass_heading_deg',
+        'heading_derived_yaw_rate_rad_s',
+        'steering_servo_pwm',
+        'throttle_servo_pwm',
+        'pid_tuning_axis',
+        'pid_tuning_desired',
+        'pid_tuning_achieved',
+        'pid_tuning_ff',
+        'pid_tuning_p',
+        'pid_tuning_i',
+        'pid_tuning_d',
+        'vehicle_mode',
+        'armed',
+        'setpoint_publisher_count',
+    }
+    assert required <= set(DIAGNOSTIC_FIELDS)
+
+
+def test_pid_tuning_mavlink_payload_is_decoded():
+    payload = struct.pack('<6fB', 0.6, 0.55, 0.2, 0.1, 0.05, 0.01, 2)
+    payload += b'\0' * (32 - len(payload))
+    msg = Mavlink()
+    msg.framing_status = Mavlink.FRAMING_OK
+    msg.msgid = 194
+    msg.len = 25
+    msg.payload64 = list(struct.unpack('<4Q', payload))
+
+    result = decode_pid_tuning(msg)
+
+    assert result['axis'] == 2
+    assert math.isclose(result['desired'], 0.6, rel_tol=1e-6)
+    assert math.isclose(result['achieved'], 0.55, rel_tol=1e-6)
+    assert math.isclose(result['ff'], 0.2, rel_tol=1e-6)
+    assert math.isclose(result['p'], 0.1, rel_tol=1e-6)
+    assert math.isclose(result['i'], 0.05, rel_tol=1e-6)
+    assert math.isclose(result['d'], 0.01, rel_tol=1e-6)
 
 
 def test_yaw_rate_direction_matches_body_ned_convention():

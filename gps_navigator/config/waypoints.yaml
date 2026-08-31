@@ -1,26 +1,46 @@
 waypoints:
   W01:
     name: "누리관"
-    latitude: 35.1348500
+    latitude: 35.13484300
     longitude: 129.1038000
-    neighbors: [W02, W03, W04, W05]
+    neighbors: [W02, W04, W08]
   W02:
     name: "광장 중앙"
     latitude: 35.1348600
     longitude: 129.1040865
-    neighbors: [W01, W03, W04, W05]
+    neighbors: [W01, W03, W07]
   W03:
     name: "청운관"
     latitude: 35.1345200
     longitude: 129.1042250
-    neighbors: [W01, W02, W04, W05]
+    neighbors: [W02]
   W04:
     name: "웅비관"
-    latitude: 35.1345829
-    longitude: 129.1038492
-    neighbors: [W01, W02, W03, W05]
+    latitude: 35.1345000
+    longitude: 129.1037470
+    neighbors: [W01, W05]
   W05:
     name: "본부"
-    latitude: 35.1340450
-    longitude: 129.1037000
-    neighbors: [W01, W02, W03, W04]
+    latitude: 35.1340880
+    longitude: 129.1036950
+    neighbors: [W04]
+  W06:
+    name: "카페 파라다이스"
+    latitude: 35.1354264
+    longitude: 129.1041929
+    neighbors: [W07]
+  W07:
+    name: "광장 초입2"
+    latitude: 35.1353908
+    longitude: 129.1040659
+    neighbors: [W06, W02, W08, W09]
+  W08:
+    name: "누리관 느티나무숲"
+    latitude: 35.1352009
+    longitude: 129.1038654
+    neighbors: [W01, W07]
+  W09:
+    name: "광장 초입1"
+    latitude: 35.135485
+    longitude: 129.1040475
+    neighbors: [W07]
