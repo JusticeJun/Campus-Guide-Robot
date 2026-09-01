@@ -25,6 +25,12 @@ setup(
     entry_points={
         'console_scripts': [
             'waypoint_follower = gps_navigator.waypoint_follower_node:main',
+            'turn_radius_calibration = '
+            'gps_navigator.turn_radius_calibration_node:main',
+            'speed_calibration = '
+            'gps_navigator.speed_calibration_node:main',
+            'steering_pid_recorder = '
+            'gps_navigator.steering_pid_recorder_node:main',
         ],
     },
 )
