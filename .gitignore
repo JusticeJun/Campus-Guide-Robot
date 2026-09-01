@@ -1,392 +1,58 @@
-# =========================================================
-# CAMPUS GUIDE ROBOT
-# Jetson Orin Nano + ROS 2 + Pixhawk + FastAPI + React
-# =========================================================
-
-# ---------------------------------------------------------
-# OS / FILE MANAGER
-# ---------------------------------------------------------
+# OS and editors
 .DS_Store
 Thumbs.db
-Desktop.ini
-ehthumbs.db
-Icon?
-.Spotlight-V100/
-.Trashes/
-$RECYCLE.BIN/
-
-# ---------------------------------------------------------
-# EDITORS / IDE
-# ---------------------------------------------------------
 .idea/
-*.iml
-*.ipr
-*.iws
-
-.vscode/*
-!.vscode/extensions.json
-!.vscode/settings.example.json
-!.vscode/tasks.example.json
-!.vscode/launch.example.json
-
+.vscode/
 *.swp
 *.swo
 *~
 *.bak
 *.orig
 
-# ---------------------------------------------------------
-# SECRETS / LOCAL ENVIRONMENT
-# ---------------------------------------------------------
+# Local environment and secrets
 .env
 .env.*
 !.env.example
-
 *.pem
 *.key
-*.p12
-*.pfx
-*.jks
-*.keystore
-
 config/secrets.yaml
-config/network.yaml
-config/local.yaml
 config/*_local.yaml
-config/*.private.yaml
-config/credentials/
-secrets/
-credentials/
 
-# ---------------------------------------------------------
-# PYTHON / FASTAPI
-# ---------------------------------------------------------
+# Python
 __pycache__/
 *.py[cod]
-*$py.class
-
 .venv/
 venv/
-env/
-ENV/
-
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.pyright/
-.pyre/
-.hypothesis/
-.tox/
-.nox/
-
 .coverage
-.coverage.*
 htmlcov/
-coverage.xml
-
 *.egg-info/
-.eggs/
-pip-wheel-metadata/
-.python-version
 
-backend/logs/
-backend/tmp/
-backend/temp/
-backend/uploads/
-backend/.cache/
-backend/data/runtime/
-backend/data/local/
+# ROS 2 / colcon
+/build/
+/install/
+/log/
+/test_results/
+.colcon/
 
-# Python package managers
-.uv-cache/
-.pdm-build/
-.pdm-python
-.poetry/
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Keep dependency and lock files
-!requirements.txt
-!requirements-dev.txt
-!pyproject.toml
-!poetry.lock
-!pdm.lock
-!uv.lock
-
-# ---------------------------------------------------------
-# LOCAL DATABASES / RUNTIME STATE
-# ---------------------------------------------------------
-*.sqlite
-*.sqlite3
-*.sqlite-shm
-*.sqlite-wal
-
-backend/data/*.db
-backend/data/*.sqlite
-backend/data/*.sqlite3
-
-*.pid
-*.pid.lock
-*.sock
-
-# ---------------------------------------------------------
-# LOGS / TEMPORARY FILES
-# ---------------------------------------------------------
+# Runtime logs and temporary files
 *.log
 *.tmp
 *.temp
-*.cache
+*.pid
 
-logs/
-tmp/
-temp/
-.cache/
-
-# ---------------------------------------------------------
-# ROS 2 / COLCON
-# ---------------------------------------------------------
-ros2_ws/build/
-ros2_ws/install/
-ros2_ws/log/
-ros2_ws/test_results/
-
-.colcon/
-colcon_defaults.yaml.user
-
-# ROS bag / recorded topic data
+# Rosbags and generated calibration data
 *.bag
 *.bag.active
 *.db3
 *.mcap
-data/rosbags/
+/diagnostics/
+**/diagnostics/*.csv
+*_trace_*.csv
+*_trajectory_*.csv
+trajectory*.csv
 
-# ---------------------------------------------------------
-# C / C++ / CMAKE
-# ---------------------------------------------------------
-*.o
-*.obj
-*.lo
-*.la
-*.a
-*.lib
-*.so
-*.so.*
-*.dll
-*.dylib
-*.exe
-*.out
-
-CMakeFiles/
-CMakeCache.txt
-cmake_install.cmake
-CTestTestfile.cmake
-compile_commands.json
-Makefile
-
-# ---------------------------------------------------------
-# REACT / NODE / FRONTEND
-# ---------------------------------------------------------
-node_modules/
-frontend/node_modules/
-
-frontend/build/
-frontend/dist/
-frontend/out/
-frontend/.next/
-frontend/.nuxt/
-frontend/.cache/
-frontend/.vite/
-frontend/.turbo/
-frontend/.parcel-cache/
-frontend/dev-dist/
-frontend/coverage/
-frontend/.eslintcache
-
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-
-.npm/
-.yarn/cache/
-.pnpm-store/
-
-frontend/.env
-frontend/.env.*
-!frontend/.env.example
-
-# Keep frontend dependency manifests
-!frontend/package.json
-!frontend/package-lock.json
-!frontend/yarn.lock
-!frontend/pnpm-lock.yaml
-
-# ---------------------------------------------------------
-# JUPYTER / NOTEBOOKS
-# ---------------------------------------------------------
-.ipynb_checkpoints/
-
-# ---------------------------------------------------------
-# JETSON / NVIDIA / CUDA
-# ---------------------------------------------------------
-*.img
-*.iso
-
-*.engine
-*.plan
-*.cubin
-*.fatbin
-*.ptx
-
-*.nsys-rep
-*.qdrep
-*.ncu-rep
-*.nvvp
-*.nvprof
-
-tegrastats*.txt
-jtop*.log
-
-# ---------------------------------------------------------
-# AI / MACHINE LEARNING
-# ---------------------------------------------------------
-*.onnx
-*.pt
-*.pth
-*.ckpt
-*.tflite
-*.weights
-*.safetensors
-
-models/
-checkpoints/
-runs/
-wandb/
-mlruns/
-lightning_logs/
-tensorboard/
-ray_results/
-.optuna/
-artifacts/
-outputs/
-experiments/
-datasets/
-
-!models/README.md
-!models/.gitkeep
-!checkpoints/README.md
-!checkpoints/.gitkeep
-!datasets/README.md
-!datasets/.gitkeep
-
-# ---------------------------------------------------------
-# CAMERA / LIDAR / SENSOR DATA
-# ---------------------------------------------------------
-*.mp4
-*.avi
-*.mov
-*.mkv
-*.webm
-
-*.pcd
-*.ply
-*.las
-*.laz
-
-captures/
-screenshots/
-debug_frames/
-
-data/videos/
-data/images/raw/
-data/lidar/
-data/logs/
-data/runtime/
-data/cache/
-
-!data/README.md
-!data/**/README.md
-!data/**/.gitkeep
-
-# ---------------------------------------------------------
-# MAPS / NAVIGATION / SLAM
-# ---------------------------------------------------------
-data/maps/generated/
-data/maps/temp/
-data/slam_sessions/
-nav2_logs/
-
-*.bt
-*.ot
-*.posegraph
-
-# Final maps placed in config/maps/ are intentionally trackable.
-# Do not globally ignore *.pgm or *.yaml.
-
-# ---------------------------------------------------------
-# GAZEBO / SIMULATION
-# ---------------------------------------------------------
-.gazebo/
-.ignition/
-.gz/
-
-# Keep authored simulation assets such as:
-# *.world, *.sdf, *.urdf, *.xacro, meshes/
-
-# ---------------------------------------------------------
-# PIXHAWK / MAVLINK / QGROUNDCONTROL
-# ---------------------------------------------------------
-*.ulg
-*.tlog
-mav.tlog*
-mav.parm
-
-flight_logs/
-mavlink_logs/
-
-*.params.bak
-*.waypoints.bak
-
-# Keep validated parameter/config files under config/pixhawk/
-
-# ---------------------------------------------------------
-# SYSTEMD / UDEV TEMP BACKUPS
-# ---------------------------------------------------------
-*.service.bak
-*.rules.bak
-
-# Actual systemd/*.service and udev/*.rules files are trackable.
-
-# ---------------------------------------------------------
-# DOCKER
-# ---------------------------------------------------------
-docker-data/
-volumes/
-docker-compose.override.yml
-
-# Keep Dockerfile, docker-compose.yml and .dockerignore.
-
-# ---------------------------------------------------------
-# ARCHIVES / INSTALLATION PACKAGES
-# ---------------------------------------------------------
-*.zip
-*.tar
-*.tar.gz
-*.tgz
-*.7z
-*.rar
-
-# ---------------------------------------------------------
-# TEST / REPORT OUTPUT
-# ---------------------------------------------------------
-test-results/
-reports/generated/
-coverage/
-
-# ---------------------------------------------------------
-# LOCAL MACHINE OVERRIDES
-# ---------------------------------------------------------
-local/
-.local/
-settings.local.json
-*.local.json
+# Personal operator notes
+/instructions.md
