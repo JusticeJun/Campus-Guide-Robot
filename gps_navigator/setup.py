@@ -31,6 +31,8 @@ setup(
             'gps_navigator.speed_calibration_node:main',
             'steering_pid_recorder = '
             'gps_navigator.steering_pid_recorder_node:main',
+            'gps_waypoint_sampler = '
+            'gps_navigator.gps_waypoint_sampler_node:main',
         ],
     },
 )
