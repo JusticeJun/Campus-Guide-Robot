@@ -44,6 +44,8 @@ setup(
             'nav2_route_adapter = gps_navigator.nav2_route_adapter_node:main',
             'pixhawk_command_adapter = '
             'gps_navigator.pixhawk_command_adapter_node:main',
+            'navigation_status_monitor = '
+            'gps_navigator.navigation_status_monitor_node:main',
             'gps_waypoint_sampler = '
             'gps_navigator.gps_waypoint_sampler_node:main',
         ],

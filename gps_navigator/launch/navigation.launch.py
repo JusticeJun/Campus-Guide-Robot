@@ -1,16 +1,20 @@
 import os
+from datetime import datetime
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
+    ExecuteProcess,
     IncludeLaunchDescription,
 )
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch.substitutions import PythonExpression
 from launch_ros.actions import Node
 from nav2_common.launch import RewrittenYaml
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -20,10 +24,16 @@ def generate_launch_description():
     position_topic = LaunchConfiguration('position_topic')
     heading_topic = LaunchConfiguration('heading_topic')
     params_file = LaunchConfiguration('params_file')
+    record_bag = LaunchConfiguration('record_bag')
     compact_console = LaunchConfiguration('compact_console')
+    dashboard_in_launch = LaunchConfiguration('dashboard_in_launch')
     nav2_log_level = PythonExpression([
         "'warn' if '", compact_console, "'.lower() == 'true' else 'info'"
     ])
+    bag_path = os.path.join(
+        '/home/ykk/ros2_ws/diagnostics',
+        'nav2_production_' + datetime.now().strftime('%Y%m%d_%H%M%S'),
+    )
     ackermann_through_poses_bt = os.path.join(
         package_share,
         'behavior_trees',
@@ -69,7 +79,9 @@ def generate_launch_description():
                 package_share, 'config', 'nav2_gps.yaml'
             ),
         ),
+        DeclareLaunchArgument('record_bag', default_value='false'),
         DeclareLaunchArgument('compact_console', default_value='true'),
+        DeclareLaunchArgument('dashboard_in_launch', default_value='true'),
         Node(
             package='gps_navigator', executable='gps_localization',
             name='gps_localization', output='screen',
@@ -103,5 +115,45 @@ def generate_launch_description():
         Node(
             package='gps_navigator', executable='pixhawk_command_adapter',
             name='pixhawk_command_adapter', output='screen',
+        ),
+        Node(
+            condition=IfCondition(dashboard_in_launch),
+            package='gps_navigator', executable='navigation_status_monitor',
+            name='navigation_status_monitor', output='screen',
+            emulate_tty=True,
+            parameters=[{
+                'position_topic': position_topic,
+                'heading_topic': heading_topic,
+                'status_rate_hz': 1.0,
+                'dashboard_mode': ParameterValue(
+                    compact_console, value_type=bool
+                ),
+            }],
+        ),
+        ExecuteProcess(
+            condition=IfCondition(record_bag),
+            output='screen',
+            cmd=[
+                'ros2', 'bag', 'record', '--include-hidden-topics',
+                '-o', bag_path,
+                '/gps_navigation/route',
+                '/navigate_through_poses/_action/feedback',
+                '/plan',
+                '/local_plan',
+                '/cmd_vel_nav',
+                '/cmd_vel',
+                '/mavros/setpoint_raw/local',
+                '/mavros/setpoint_raw/target_local',
+                '/mavros/local_position/velocity_body',
+                '/mavros/imu/data',
+                '/mavros/global_position/global',
+                '/mavros/global_position/compass_hdg',
+                '/mavros/rc/out',
+                '/mavros/mavlink/from',
+                '/mavros/state',
+                '/odometry/gps',
+                '/tf',
+                '/tf_static',
+            ],
         ),
     ])
