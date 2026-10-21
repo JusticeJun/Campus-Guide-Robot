@@ -25,6 +25,22 @@
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
 
+  <exec_depend>launch_xml</exec_depend>
+
+  <exec_depend>rtabmap_launch</exec_depend>
+
+  <exec_depend>rtabmap_odom</exec_depend>
+
+  <exec_depend>rtabmap_slam</exec_depend>
+
+  <exec_depend>rtabmap_msgs</exec_depend>
+
+  <exec_depend>realsense2_camera</exec_depend>
+
+  <exec_depend>imu_filter_madgwick</exec_depend>
+
+  <exec_depend>rmw_cyclonedds_cpp</exec_depend>
+
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>
