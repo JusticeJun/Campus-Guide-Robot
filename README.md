@@ -66,6 +66,6 @@ PYTHONNOUSERSITE=1 colcon test --packages-select gps_navigator localization_reco
 colcon test-result --verbose
 ```
 
-`PYTHONNOUSERSITE=1`은 사용자 홈에 설치된 unrelated pytest 플러그인이 ROS 시스템 테스트 환경을
+`PYTHONNOUSERSITE=1`은 사용자 홈에 설치된 무관한 pytest 플러그인이 ROS 시스템 테스트 환경을
 덮어쓰지 않도록 한다. 기능 테스트는 센서·모터 없이 실행하며, 실차 검증과 구분한다.
 기존 저작권 헤더 검사는 프로젝트 소스의 라이선스 정리가 완료되지 않아 건너뛰는 상태다.
