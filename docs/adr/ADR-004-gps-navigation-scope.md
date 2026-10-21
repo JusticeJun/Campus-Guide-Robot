@@ -1,12 +1,14 @@
 # ADR-004: GPS Navigation의 적용 범위와 정밀 Localization 방향
 
-## Context / Problem
+GPS 기반 주행 단계의 기록이다. 현재 확장은 [ADR-005](ADR-005-rgbd-map-navigation.md)를 참고한다.
+
+## 배경
 
 Standalone M8N GPS의 multi-meter uncertainty와 GPS-based Nav2의 실차 주행
 성공을 함께 고려해, GPS navigation을 campus에서 어느 범위까지 사용할지
 결정해야 했다.
 
-## Decision
+## 결정
 
 GPS는 clearance가 충분한 공간의 campus-scale/global route navigation에 계속
 사용한다. 다만 GPS-only localization을 좁은 보행로, curb 인접 구간,
@@ -17,7 +19,7 @@ GPS는 clearance가 충분한 공간의 campus-scale/global route navigation에 
 map/sensor-based localization을 결합하는 방향으로 발전시킨다. 이 정밀
 localization architecture는 아직 구현과 실차 검증이 완료되지 않았다.
 
-## Evidence
+## 근거
 
 - Stationary M8N sampling에서 multi-meter scatter가 관찰되어 단발 GPS
   coordinate를 centimeter-level ground truth로 취급할 수 없음을 확인했다.
@@ -27,7 +29,7 @@ localization architecture는 아직 구현과 실차 검증이 완료되지 않�
   correction으로 목적지에 도달했고, production bag에서 smoother/adapter/FCU가
   새로운 oscillation을 생성했다는 증거는 없었다.
 
-## Consequences
+## 영향
 
 - GPS navigation 성공과 GPS 정밀도 한계를 동시에 인정한다. GPS를
   폐기하거나 Nav2 실패로 기록하지 않는다.

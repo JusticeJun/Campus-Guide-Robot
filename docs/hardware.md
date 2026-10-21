@@ -1,49 +1,65 @@
-# Hardware and Vehicle Constraints
+# 하드웨어와 실차 검증 범위
 
-## Platform
+## 구성과 좌표
 
-- Main computer: NVIDIA Jetson Orin Nano
-- Flight controller: Pixhawk 2.4.8 with ArduRover
-- Vehicle: Ackermann steering RC rover
-- Current localization sensor: GPS and compass through MAVROS
-- Planned sensors: SLAM sensor and LiDAR; not currently implemented
+| 항목 | 적용값 |
+|---|---|
+| 컴퓨터 | NVIDIA Jetson Orin Nano, ROS 2 Humble |
+| 카메라 | Intel RealSense D435if, RGB-D + 카메라 IMU |
+| 차량 제어기 | Pixhawk 6C, ArduRover 4.7.1 (2026-10-15 확인) |
+| 구동 형식 | Ackermann 조향 |
+| 축간거리 / 차체 길이 / 폭 | 0.35 / 0.48 / 0.27m |
+| `base_link` | 뒷바퀴 차축 중앙, 지면 위 0.07m |
+| 축 방향 | +X 전방, +Y 왼쪽, +Z 위 |
+| 차체 범위 | X: −0.07~0.41m, Y: ±0.135m |
+| 계획 최소 회전반경 | 1.7m |
+| 직선 / 급커브 / 명령 상한 | 0.35 / 0.25~0.35 / 0.40m/s |
 
-## Confirmed Vehicle Parameters
+```yaml
+footprint: [[0.41, 0.135], [0.41, -0.135], [-0.07, -0.135], [-0.07, 0.135]]
+base_to_camera: [0.3001, 0.0175, 0.2032, 0, 0, 0]  # m, rad
+```
 
-| Parameter | Value |
-|---|---:|
-| Wheelbase | 0.35 m |
-| Vehicle width | 0.27 m |
-| Vehicle length | 0.50 m |
-| Navigation minimum turning radius | 1.7 m |
-| Nominal straight speed | 0.60 m/s |
-| Curve speed target | about 0.40 m/s |
-| ArduRover `WP_SPEED` | 0.60 m/s |
-| `SERVO1_MIN` | 1000 PWM |
-| `SERVO1_TRIM` | 1500 PWM |
-| `SERVO1_MAX` | 2000 PWM |
+카메라 치수는 전면 유리 위치 X=0.3048m, 본체 중앙 지면 높이=0.2732m에
+D435if 광학 기준점 보정을 적용한 값이다. 정밀 외부 파라미터 보정 결과는 아니므로 재장착 시 확인한다.
+카메라 내부 TF는 RealSense 드라이버가 관리한다.
 
-Pixhawk remains responsible for low-level steering, throttle and actuator output.
-Navigation software does not directly command servo PWM.
+## 카메라 IMU 준비
 
-## Validated Steering Baseline
+검증 당시 커널은 `5.15.148-tegra`, RealSense ROS/librealsense는 `4.58.4/2.58.4`였다.
+Jetson 커널의 HID sensor hub 지원이 없어 IMU 수신을 위한 커널 모듈을 별도 준비했다.
+해당 기기에 설치된 모듈은 소스 저장소나 diagnostics 삭제 대상이 아니며,
+다른 기기에서 이 저장소를 빌드하는 것만으로 IMU 지원이 설치되지는 않는다.
+`/camera/camera/imu`와 필터 출력 `/camera/imu` 수신을 확인한다.
 
-The current ArduRover steering-rate baseline validated by a fixed LEFT circle
-hardware test is:
+## Pixhawk 6C 조향 기준값
 
-| Parameter | Value |
+2026-10-18 정지 상태에서 사용자 승인 후 FF/P를 적용하고 재확인한 값이다.
+ROS launch는 FCU 파라미터를 자동으로 쓰지 않는다.
+
+| 파라미터 | 값 |
 |---|---:|
 | `ATC_STR_RAT_FF` | 3.0 |
 | `ATC_STR_RAT_P` | 1.0 |
-| `ATC_STR_RAT_I` | 0.2 |
-| `ATC_STR_RAT_D` | 0 |
+| `ATC_STR_RAT_I` / `ATC_STR_RAT_D` | 0.2 / 0 |
 | `ATC_STR_RAT_IMAX` | 1.0 |
-| `ATC_STR_RAT_MAX` | 120 deg/s |
-| `ATC_STR_ACC_MAX` | 120 deg/s/s |
-| `MOT_SPD_SCA_BASE` | 1.0 m/s |
+| `ATC_STR_RAT_MAX` / `ATC_STR_ACC_MAX` | 120 / 120 |
+| `MOT_SPD_SCA_BASE` | 1.0 |
 
-At a desired yaw rate of 0.235294 rad/s, the final five seconds averaged about
-0.2333 rad/s actual yaw rate (about 99% tracking) and a 1.66--1.67 m
-speed/yaw-rate radius. The navigation constraint remains 1.7 m. ROS launch
-does not write these FCU parameters automatically; verify the FCU values before
-hardware operation.
+오른쪽 원주 시험(0.4m/s, −0.235294rad/s)은 360.2°에서 종료됐다.
+마지막 5초 평균 IMU yaw rate는 −0.236421rad/s, FCU 전방 속도 추정값은 0.39420m/s였다.
+이는 해당 속도의 오른쪽 조향 응답 확인이며, 모든 커브·왼쪽 조향·독립 실측 속도의 보장은 아니다.
+계획 회전반경은 1.7m를 유지한다.
+
+## 운용 한계
+
+카메라 기반 지도 주행은 실차에서 확인했지만, 영상 추적은 조명·블러·시점 차이·수신 지연에 영향을 받는다.
+차량 제어는 FCU 내부 GPS/나침반 추정에 여전히 의존한다. 카메라 위치추정 정상과 FCU 추정 정상은 별개다.
+이전 시험에서 실제 전진을 FCU가 후진으로 해석하며 스로틀이 상승한 기록이 있었다.
+따라서 센서 교체 후에는 실제 방향, QGC 방향, 실제 차속과 FCU 추정 차속을 대조한다.
+`SERVO3_REVERSED`는 출력 전기적 방향이며 잘못된 방향 추정을 고치는 설정이 아니다.
+
+추가 전장 장비를 켰을 때 자기장 경고와 GPS 수신 저하가 관찰됐다. 2026-10-19 비교에서
+장비 전원 OFF 후 위성 0개/No Fix에서 3D Fix로 회복됐지만 재현 시험까지 완료된 원인 확정은 아니다.
+나침반 보정 품질 문제도 남아 있다. 센서를 재배치하고 실제 운용 전원 상태에서 간섭을 확인해야 한다.
+이 공개 버전은 라이다 감지·회피를 제공하지 않는다.
