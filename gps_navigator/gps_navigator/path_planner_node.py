@@ -8,7 +8,15 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.signals import SignalHandlerOptions
 from sensor_msgs.msg import NavSatFix
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
+from rclpy.time import Time
+from tf2_ros import Buffer, TransformException, TransformListener
+
+from gps_navigator.navigation_profile import (
+    covered_graph,
+    load_profile,
+    map_to_gps,
+)
 import yaml
 
 from gps_navigator.geo_utils import (
@@ -27,9 +35,7 @@ def nearest_edge_projection(waypoints, latitude, longitude):
         for waypoint_id, waypoint in waypoints.items()
     }
     directed_edges = {
-        (start, end)
-        for start, waypoint in waypoints.items()
-        for end in waypoint['neighbors']
+        (start, end) for start, waypoint in waypoints.items() for end in waypoint['neighbors']
     }
     segments = {}
     for start, end in directed_edges:
@@ -67,21 +73,28 @@ class PathPlanner(Node):
 
     def __init__(self):
         super().__init__('path_planner')
-        default_yaml = (
-            get_package_share_directory('gps_navigator')
-            + '/config/waypoints.yaml'
-        )
+        default_yaml = get_package_share_directory('gps_navigator') + '/config/waypoints.yaml'
         self.declare_parameter('waypoints_file', default_yaml)
-        self.declare_parameter(
-            'position_topic', '/mavros/global_position/global'
-        )
+        self.declare_parameter('position_topic', '/mavros/global_position/global')
         self.declare_parameter('destination', '')
+        self.declare_parameter('navigation_profile', '')
+        self.declare_parameter('route_policy', 'direct')
         self.declare_parameter('max_start_edge_distance_m', 15.0)
         self.declare_parameter('start_node_snap_distance_m', 1.0)
         self.declare_parameter('start_edge_endpoint_margin_m', 3.0)
-        self.waypoints = self.load_waypoints(
-            self.get_parameter('waypoints_file').value
-        )
+        self.waypoints = self.load_waypoints(self.get_parameter('waypoints_file').value)
+        self.localization_ready = False
+        self.readiness_time = None
+        self.create_subscription(Bool, '/navigation/ready', self.ready_callback, 1)
+        self.profile = None
+        profile_path = self.get_parameter('navigation_profile').value
+        if profile_path:
+            self.profile = load_profile(profile_path, 'validation')
+            self.waypoints = covered_graph(
+                self.load_waypoints(self.profile['waypoints_file']), self.profile
+            )
+            self.tf_buffer = Buffer()
+            self.tf_listener = TransformListener(self.tf_buffer, self)
         self.current_latitude = None
         self.current_longitude = None
         self.last_destination = None
@@ -89,17 +102,16 @@ class PathPlanner(Node):
         route_qos = QoSProfile(depth=1)
         route_qos.reliability = ReliabilityPolicy.RELIABLE
         route_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
-        self.route_pub = self.create_publisher(
-            String, '/gps_navigation/route', route_qos
-        )
+        self.route_pub = self.create_publisher(String, '/gps_navigation/route', route_qos)
         position_qos = QoSProfile(depth=10)
         position_qos.reliability = ReliabilityPolicy.BEST_EFFORT
-        self.create_subscription(
-            NavSatFix,
-            self.get_parameter('position_topic').value,
-            self.position_callback,
-            position_qos,
-        )
+        if self.profile is None:
+            self.create_subscription(
+                NavSatFix,
+                self.get_parameter('position_topic').value,
+                self.position_callback,
+                position_qos,
+            )
         self.create_timer(1.0, self.plan_if_needed)
 
     def load_waypoints(self, filename):
@@ -111,17 +123,20 @@ class PathPlanner(Node):
         for waypoint_id, waypoint in waypoints.items():
             for field in ('name', 'latitude', 'longitude', 'neighbors'):
                 if field not in waypoint:
-                    raise RuntimeError(
-                        f'{waypoint_id} is missing field: {field}'
-                    )
+                    raise RuntimeError(f'{waypoint_id} is missing field: {field}')
             for neighbor in waypoint['neighbors']:
                 if neighbor not in waypoints:
-                    raise RuntimeError(
-                        f'{waypoint_id} has unknown neighbor: {neighbor}'
-                    )
+                    raise RuntimeError(f'{waypoint_id} has unknown neighbor: {neighbor}')
         return waypoints
 
+    def ready_callback(self, msg):
+        self.localization_ready = msg.data
+        self.readiness_time = self.get_clock().now()
+
     def position_callback(self, msg):
+        if self.profile:
+            # GNSS remains available to diagnostics; never overwrite metric pose.
+            return
         if valid_nav_sat_fix(msg):
             self.update_current_position(msg.latitude, msg.longitude)
         else:
@@ -195,9 +210,7 @@ class PathPlanner(Node):
             nearest['latitude'],
             nearest['longitude'],
         )
-        snap_distance = float(
-            self.get_parameter('start_node_snap_distance_m').value
-        )
+        snap_distance = float(self.get_parameter('start_node_snap_distance_m').value)
         if snap_distance < 0.0:
             raise ValueError('start_node_snap_distance_m must be non-negative')
         if nearest_distance <= snap_distance:
@@ -207,15 +220,10 @@ class PathPlanner(Node):
         projection = nearest_edge_projection(
             self.waypoints, self.current_latitude, self.current_longitude
         )
-        max_distance = float(
-            self.get_parameter('max_start_edge_distance_m').value
-        )
+        max_distance = float(self.get_parameter('max_start_edge_distance_m').value)
         if max_distance < 0.0:
             raise ValueError('max_start_edge_distance_m must be non-negative')
-        if (
-            projection is None
-            or projection['distance_to_edge_m'] > max_distance
-        ):
+        if projection is None or projection['distance_to_edge_m'] > max_distance:
             route, distance = self.dijkstra(nearest_id, destination_id)
             return route, distance, None
 
@@ -224,26 +232,18 @@ class PathPlanner(Node):
         fraction = projection['fraction_from_a']
         raw_fraction = projection['raw_fraction_from_a']
         edge_length = projection['edge_length_m']
-        endpoint_margin = float(
-            self.get_parameter('start_edge_endpoint_margin_m').value
-        )
+        endpoint_margin = float(self.get_parameter('start_edge_endpoint_margin_m').value)
         if endpoint_margin < 0.0:
-            raise ValueError(
-                'start_edge_endpoint_margin_m must be non-negative'
-            )
+            raise ValueError('start_edge_endpoint_margin_m must be non-negative')
 
         distance_from_a = fraction * edge_length
         distance_from_b = (1.0 - fraction) * edge_length
         if raw_fraction <= 0.0 or distance_from_a <= endpoint_margin:
             start_id = a
-            connection_cost = (
-                projection['distance_to_edge_m'] + distance_from_a
-            )
+            connection_cost = projection['distance_to_edge_m'] + distance_from_a
         elif raw_fraction >= 1.0 or distance_from_b <= endpoint_margin:
             start_id = b
-            connection_cost = (
-                projection['distance_to_edge_m'] + distance_from_b
-            )
+            connection_cost = projection['distance_to_edge_m'] + distance_from_b
         else:
             candidates = []
             # A directed A -> B edge permits an interior temporary start to
@@ -259,9 +259,8 @@ class PathPlanner(Node):
             if not candidates:
                 return None, math.inf, projection
             _, start_id = min(candidates, key=lambda item: item[0])
-            connection_cost = (
-                projection['distance_to_edge_m']
-                + (distance_from_a if start_id == a else distance_from_b)
+            connection_cost = projection['distance_to_edge_m'] + (
+                distance_from_a if start_id == a else distance_from_b
             )
 
         # Projection chooses only the first real graph node. From that node
@@ -274,6 +273,41 @@ class PathPlanner(Node):
         return route, total_cost, projection
 
     def plan_if_needed(self):
+        if self.profile and (
+            not self.localization_ready
+            or self.readiness_time is None
+            or not 0 <= (self.get_clock().now() - self.readiness_time).nanoseconds <= 5e8
+        ):
+            return
+        if self.profile:
+            try:
+                pose = self.tf_buffer.lookup_transform('map', 'base_link', Time())
+                age = (self.get_clock().now() - Time.from_msg(pose.header.stamp)).nanoseconds / 1e9
+                if not 0.0 <= age <= 0.5:
+                    return
+                self.update_current_position(
+                    *map_to_gps(
+                        pose.transform.translation.x,
+                        pose.transform.translation.y,
+                        self.profile['alignment'],
+                    )
+                )
+                projection = nearest_edge_projection(
+                    self.waypoints, self.current_latitude, self.current_longitude
+                )
+                if self.get_parameter('route_policy').value == 'graph' and (
+                    projection is None
+                    or projection['distance_to_edge_m']
+                    > self.get_parameter('max_start_edge_distance_m').value
+                ):
+                    self.get_logger().warning(
+                        'Graph policy: current pose is outside reviewed edge entry area; '
+                        'use direct policy for an off-graph start',
+                        throttle_duration_sec=5.0,
+                    )
+                    return  # No GPS-style nearest-node fallback outside coverage.
+            except TransformException:
+                return
         destination_text = self.get_parameter('destination').value.strip()
         if (
             not destination_text
@@ -283,33 +317,48 @@ class PathPlanner(Node):
             return
         destination_id = self.resolve_destination(destination_text)
         if destination_id is None:
-            self.get_logger().error(
-                f'Unknown destination ID or name: {destination_text}'
-            )
+            self.get_logger().error(f'Unknown destination ID or name: {destination_text}')
             self.last_destination = destination_text
             return
 
-        route, distance_m, projection = self.route_from_projected_start(
-            destination_id
-        )
+        if self.profile and self.get_parameter('route_policy').value == 'direct':
+            route, projection = [destination_id], None
+            target = self.waypoints[destination_id]
+            distance_m = haversine_distance(
+                self.current_latitude,
+                self.current_longitude,
+                target['latitude'],
+                target['longitude'],
+            )
+        else:
+            route, distance_m, projection = self.route_from_projected_start(destination_id)
         self.last_destination = destination_text
         if route is None:
-            self.get_logger().error(
-                f'No route from current position to {destination_id}'
-            )
+            self.get_logger().error(f'No route from current position to {destination_id}')
             return
 
+        entry_edge = None
+        if self.profile and projection is not None:
+            first = route[0]
+            other = projection['b'] if first == projection['a'] else projection['a']
+            if first in self.waypoints[other]['neighbors']:
+                entry_edge = [other, first]
         message = String()
-        message.data = json.dumps({
-            'destination': destination_id,
-            'route': route,
-            'distance_m': distance_m,
-        }, ensure_ascii=False)
+        message.data = json.dumps(
+            {
+                'destination': destination_id,
+                'route': route,
+                'distance_m': distance_m,
+                'entry_edge': entry_edge,
+                'policy': self.get_parameter('route_policy').value if self.profile else 'gps',
+            },
+            ensure_ascii=False,
+        )
         self.route_pub.publish(message)
-        if projection is None:
-            self.get_logger().info(
-                'Used nearest-waypoint start (node snap or edge fallback)'
-            )
+        if self.profile and self.get_parameter('route_policy').value == 'direct':
+            self.get_logger().info('Direct policy: only final destination sent to Nav2')
+        elif projection is None:
+            self.get_logger().info('Used nearest-waypoint start (node snap or edge fallback)')
         else:
             self.get_logger().info(
                 'Temporary start projected onto '
@@ -317,9 +366,7 @@ class PathPlanner(Node):
                 f'({projection["distance_to_edge_m"]:.1f} m from edge); '
                 f'first graph node={projection["selected_start"]}'
             )
-        self.get_logger().info(
-            f'Route: {" -> ".join(route)} ({distance_m:.1f} m)'
-        )
+        self.get_logger().info(f'Route: {" -> ".join(route)} ({distance_m:.1f} m)')
 
 
 def main(args=None):

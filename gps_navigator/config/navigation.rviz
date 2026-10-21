@@ -1,0 +1,43 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: nav2_rviz_plugins/Navigation 2
+    Name: Navigation 2
+Visualization Manager:
+  Class: ''
+  Global Options:
+    Fixed Frame: map
+    Background Color: 48; 48; 48
+  Displays:
+    - Class: rviz_default_plugins/Map
+      Name: Occupancy
+      Enabled: true
+      Topic:
+        Value: /map
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+    - Class: rviz_default_plugins/Path
+      Name: Nav2 plan
+      Enabled: true
+      Topic:
+        Value: /plan
+      Color: 0; 255; 0
+    - Class: rviz_default_plugins/Polygon
+      Name: Vehicle footprint
+      Enabled: true
+      Topic:
+        Value: /local_costmap/published_footprint
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/SetInitialPose
+      Topic: /initialpose
+    - Class: nav2_rviz_plugins/GoalTool
+  Views:
+    Current:
+      Class: rviz_default_plugins/TopDownOrtho
+      Target Frame: map
+      Scale: 25
