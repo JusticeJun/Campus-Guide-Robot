@@ -1,0 +1,12 @@
+external_navigation:
+  ros__parameters:
+    transmit: false
+    # 2026-10-21 사용자 측정: 차축 중앙보다 전방 25cm, 위 7cm, 중심선.
+    # Pixhawk 화살표 전방, 차체와 평행. 본체 중앙 근사값이며 IMU 칩 정밀 측량 아님.
+    mounting_reviewed: true
+    base_to_fcu_m: [0.25, 0.0, 0.07]
+    mavlink_sink: /uas1/mavlink_sink
+    # 초기 준비의 최소 수신률. 통과 후에는 신선도/간격/FCU 상태로 주행을 유지한다.
+    minimum_ready_rate_hz: 2.0
+    max_sample_age_s: 1.0
+    max_odometry_gap_s: 2.0
