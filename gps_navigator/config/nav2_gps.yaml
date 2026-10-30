@@ -28,7 +28,7 @@ controller_server:
       yaw_goal_tolerance: 0.35
     FollowPath:
       plugin: nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController
-      desired_linear_vel: 0.4
+      desired_linear_vel: 0.3
       lookahead_dist: 1.5
       min_lookahead_dist: 1.0
       max_lookahead_dist: 2.5
@@ -40,8 +40,8 @@ controller_server:
       use_collision_detection: true
       use_regulated_linear_velocity_scaling: true
       use_cost_regulated_linear_velocity_scaling: false
-      regulated_linear_scaling_min_radius: 4.0
-      regulated_linear_scaling_min_speed: 0.4
+      regulated_linear_scaling_min_radius: 3.0
+      regulated_linear_scaling_min_speed: 0.2
       use_rotate_to_heading: false
       allow_reversing: false
 
@@ -83,7 +83,7 @@ local_costmap:
       width: 20
       height: 20
       resolution: 0.10
-      footprint: "[[0.25, 0.135], [0.25, -0.135], [-0.25, -0.135], [-0.25, 0.135]]"
+      footprint: "[[0.41, 0.135], [0.41, -0.135], [-0.07, -0.135], [-0.07, 0.135]]"
       track_unknown_space: false
       plugins: [inflation_layer]
       inflation_layer:
@@ -104,7 +104,7 @@ global_costmap:
       width: 250
       height: 250
       resolution: 0.20
-      footprint: "[[0.25, 0.135], [0.25, -0.135], [-0.25, -0.135], [-0.25, 0.135]]"
+      footprint: "[[0.41, 0.135], [0.41, -0.135], [-0.07, -0.135], [-0.07, 0.135]]"
       track_unknown_space: false
       plugins: [inflation_layer]
       inflation_layer:
@@ -152,7 +152,7 @@ velocity_smoother:
     smoothing_frequency: 10.0
     scale_velocities: false
     feedback: OPEN_LOOP
-    max_velocity: [0.6, 0.0, 0.36]
+    max_velocity: [0.4, 0.0, 0.36]
     min_velocity: [0.0, 0.0, -0.36]
     max_accel: [0.5, 0.0, 0.5]
     max_decel: [-0.8, 0.0, -0.8]

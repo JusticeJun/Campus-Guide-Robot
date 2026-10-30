@@ -1,0 +1,25 @@
+# Copy to ~/ros2_ws/maps/<version>/profile.yaml; select with current.yaml symlink.
+# Relative paths resolve next to the REAL profile (also through symlinks).
+map: map.yaml
+database: map.db
+# Optional waypoints_file; defaults to the installed campus graph.
+alignment:
+  datum: null                    # [fixed WGS84 latitude, longitude]
+  enu_to_map: null               # [translation x m, y m, yaw rad], NOT PGM origin
+  reviewed: false               # One-time surveyed/reference-anchor assessment
+# This vehicle: rear axle midpoint at wheel-axis height, X forward/Y left/Z up.
+# First-pass D435if mounting: measured [0.3048,0,0.2032], corrected to depth origin.
+# Front glass -> depth origin: -4.7 mm X; body center -> left imager: +17.5 mm Y.
+# Radians; slight upward mounting tilt is approximated as level. See docs/hardware.md.
+base_to_camera: [0.3001, 0.0175, 0.2032, 0.0, 0.0, 0.0]
+odometry_provider: rgbd_odometry # Sole odom -> base_link owner in this version
+odometry_qualified: false       # One-time sensor commissioning; not per-run RViz
+rgb_topic: /camera/camera/color/image_raw
+depth_topic: /camera/camera/aligned_depth_to_color/image_raw
+camera_info_topic: /camera/camera/color/camera_info
+covered_nodes: []               # Optional destination ID subset; empty = all IDs
+reviewed_edges: []              # Required only for graph policy; directed [from, to]
+route_half_width_m: 2.5         # Initial travel area HALF width, field/site dependent
+node_offsets_enu: {}            # Optional {ID: [east_m,north_m]} correction to graph
+# Survives map-frame changes; NOT a list of manually picked map-coordinate goals.
+validated_fingerprint: ''       # One-time content binding, see operator guide

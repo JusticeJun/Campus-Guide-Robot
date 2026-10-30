@@ -10,15 +10,17 @@ setup(
     version='0.0.0',
     packages=find_packages(exclude=['test']),
     data_files=[
-        ('share/ament_index/resource_index/packages',
-            ['resource/' + package_name]),
+        ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        (os.path.join('share', package_name, 'launch'),
-            glob('launch/*.launch.py')),
-        (os.path.join('share', package_name, 'config'),
-            glob('config/*.yaml')),
-        (os.path.join('share', package_name, 'behavior_trees'),
-            glob('behavior_trees/*.xml')),
+        (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
+        (
+            os.path.join('share', package_name, 'config'),
+            glob('config/*.yaml')
+            + glob('config/*.rviz')
+            + glob('config/*.xml')
+            + glob('config/*.sh'),
+        ),
+        (os.path.join('share', package_name, 'behavior_trees'), glob('behavior_trees/*.xml')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -35,20 +37,18 @@ setup(
         'console_scripts': [
             'imu_telemetry = gps_navigator.imu_telemetry_node:main',
             'path_planner = gps_navigator.path_planner_node:main',
-            'turn_radius_calibration = '
-            'gps_navigator.turn_radius_calibration_node:main',
-            'speed_calibration = '
-            'gps_navigator.speed_calibration_node:main',
-            'steering_pid_recorder = '
-            'gps_navigator.steering_pid_recorder_node:main',
+            'localization_guard = gps_navigator.localization_guard_node:main',
+            'drive_trace = gps_navigator.drive_trace_node:main',
+            'map_route_adapter = gps_navigator.map_route_adapter_node:main',
+            'navigation_profile = gps_navigator.navigation_profile:main',
+            'turn_radius_calibration = ' 'gps_navigator.turn_radius_calibration_node:main',
+            'speed_calibration = ' 'gps_navigator.speed_calibration_node:main',
+            'steering_pid_recorder = ' 'gps_navigator.steering_pid_recorder_node:main',
             'gps_localization = gps_navigator.gps_localization_node:main',
             'nav2_route_adapter = gps_navigator.nav2_route_adapter_node:main',
-            'pixhawk_command_adapter = '
-            'gps_navigator.pixhawk_command_adapter_node:main',
-            'navigation_status_monitor = '
-            'gps_navigator.navigation_status_monitor_node:main',
-            'gps_waypoint_sampler = '
-            'gps_navigator.gps_waypoint_sampler_node:main',
+            'pixhawk_command_adapter = ' 'gps_navigator.pixhawk_command_adapter_node:main',
+            'navigation_status_monitor = ' 'gps_navigator.navigation_status_monitor_node:main',
+            'gps_waypoint_sampler = ' 'gps_navigator.gps_waypoint_sampler_node:main',
         ],
     },
 )
