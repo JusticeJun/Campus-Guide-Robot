@@ -55,6 +55,9 @@ htmlcov/
 *.db3
 *.mcap
 /diagnostics/
+/mission_data/
+node_modules/
+*.sqlite3
 **/diagnostics/*.csv
 *_trace_*.csv
 *_trajectory_*.csv
