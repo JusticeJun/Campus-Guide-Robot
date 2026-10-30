@@ -10,7 +10,7 @@
 ```bash
 source /opt/ros/humble/setup.bash
 source ~/ros2_ws/install/setup.bash
-source ~/ros2_ws/install/gps_navigator/share/gps_navigator/config/runtime_env.sh
+source ~/ros2_ws/install/rover_navigation/share/rover_navigation/config/runtime_env.sh
 export MAP_DIR="$HOME/ros2_ws/maps/test_map/map1"
 roskeep() { bash "$HOME/ros2_ws/src/tools/ros_session.sh" "$@"; }
 ```
@@ -20,9 +20,9 @@ roskeep() { bash "$HOME/ros2_ws/src/tools/ros_session.sh" "$@"; }
 ## 2. 센서 실행
 
 ```bash
-roskeep start mavros ros2 launch gps_navigator mavros.launch.py \
+roskeep start mavros ros2 launch rover_navigation mavros.launch.py \
   fcu_url:=serial:///dev/ttyACM0:115200
-roskeep start camera ros2 launch gps_navigator camera.launch.py
+roskeep start camera ros2 launch rover_navigation camera.launch.py
 roskeep start camera_tf ros2 run tf2_ros static_transform_publisher \
   --x 0.3001 --y 0.0175 --z 0.2032 --roll 0 --pitch 0 --yaw 0 \
   --frame-id base_link --child-frame-id camera_link
@@ -31,7 +31,7 @@ roskeep start camera_tf ros2 run tf2_ros static_transform_publisher \
 기존 지도 주행·이어 촬영은 camera 명령 대신 아래 명령을 사용한다. 같은 드라이버를 중복 실행하지 않는다.
 
 ```bash
-roskeep start camera ros2 launch gps_navigator camera.launch.py \
+roskeep start camera ros2 launch rover_navigation camera.launch.py \
   runtime_file:="$MAP_DIR/localization.yaml"
 ```
 
@@ -40,7 +40,7 @@ roskeep start camera ros2 launch gps_navigator camera.launch.py \
 새 지도는 사용하지 않은 `MAP_DIR`에서 실행한다.
 
 ```bash
-roskeep start mapping ros2 launch gps_navigator mapping.launch.py \
+roskeep start mapping ros2 launch rover_navigation mapping.launch.py \
   map_dir:="$MAP_DIR" rtabmap_viz:=false
 ```
 
@@ -48,7 +48,7 @@ roskeep start mapping ros2 launch gps_navigator mapping.launch.py \
 기존 구간에서 정합된 것을 확인하고 새 구간으로 이동한다.
 
 ```bash
-roskeep start mapping ros2 launch gps_navigator mapping.launch.py \
+roskeep start mapping ros2 launch rover_navigation mapping.launch.py \
   map_dir:="$MAP_DIR" continue:=true rtabmap_viz:=false
 ```
 
@@ -90,7 +90,7 @@ map1/
 센서·카메라 TF는 계속 실행한 상태에서 VNC 터미널로 실행한다.
 
 ```bash
-ros2 launch gps_navigator navigation.launch.py \
+ros2 launch rover_navigation navigation.launch.py \
   mode:=validation map_dir:="$MAP_DIR" \
   start_mavros:=false start_camera:=false start_camera_tf:=false rviz:=true
 ```
@@ -108,7 +108,7 @@ validation은 차량 어댑터가 없어 이동하지 않는다. 먼 목표를 �
 validation을 종료한 뒤 실차 주행을 실행한다.
 
 ```bash
-ros2 launch gps_navigator navigation.launch.py \
+ros2 launch rover_navigation navigation.launch.py \
   mode:=drive map_dir:="$MAP_DIR" \
   start_mavros:=false start_camera:=false start_camera_tf:=false rviz:=true
 ```
@@ -163,7 +163,7 @@ roskeep stop camera_tf
 RTAB 주행과 동시에 실행하지 않는다. 검토된 GPS waypoint 그래프를 사용하는 기존 방식:
 
 ```bash
-ros2 launch gps_navigator gps_navigation.launch.py destination:=W05
+ros2 launch rover_navigation gps_navigation.launch.py destination:=W05
 ```
 
 별도 시험 실행점은 `turn_radius_calibration`, `speed_calibration`,
