@@ -41,6 +41,7 @@ mkdir -p ~/ros2_ws
 cd ~/ros2_ws
 git clone https://github.com/JusticeJun/Campus-Guide-Robot.git src
 source /opt/ros/humble/setup.bash
+sudo apt install python3-colcon-common-extensions python3-rosdep python3-pip
 rosdep install --from-paths src --ignore-src -r -y --rosdistro humble
 colcon build --symlink-install --packages-select localization_recovery_bt ackermann_rpp rover_navigation
 source install/setup.bash
