@@ -2,3 +2,7 @@ web/node_modules/
 .venv/
 .env
 runtime/
+
+# Python wheel build output; web/dist remains versioned.
+/build/
+/dist/
