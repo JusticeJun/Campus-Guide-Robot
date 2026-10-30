@@ -1,0 +1,18 @@
+[Unit]
+Description=Campus rover web and mission service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=%h/ros2_ws
+ExecStartPre=/usr/bin/bash %h/ros2_ws/src/tools/check_storage.sh
+ExecStart=/usr/bin/bash %h/ros2_ws/src/apps/campus_mission/deploy/run_service.sh web
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=45
+Environment=PYTHONUNBUFFERED=1
+UMask=0077
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "campus-mission"
+version = "0.1.0"
+description = "Local campus rover dashboard and ROS 2 mission orchestration"
+requires-python = ">=3.10"
+dependencies = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1", "pydantic>=2.8,<3", "PyYAML>=6", "Pillow>=9", "numpy>=1.21"]
+
+[project.optional-dependencies]
+test = ["pytest>=7", "httpx>=0.27,<0.29", "httpx2>=2,<3"]
+
+[tool.setuptools.packages.find]
+include = ["campus_mission*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
