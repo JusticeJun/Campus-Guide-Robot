@@ -14,6 +14,8 @@ from sensor_msgs.msg import Imu
 class ImuTelemetry(Node):
     def __init__(self):
         super().__init__('imu_telemetry')
+        self.message_id = self.declare_parameter('message_id', 31).value
+        topic = self.declare_parameter('imu_topic', '/mavros/imu/data').value
         self.connected = False
         self.samples = deque(maxlen=500)
         self.attempts = 0
@@ -21,7 +23,7 @@ class ImuTelemetry(Node):
         self.future = None
         self.client = self.create_client(MessageInterval, '/mavros/set_message_interval')
         self.create_subscription(State, '/mavros/state', self.on_state, 10)
-        self.create_subscription(Imu, '/mavros/imu/data', self.on_imu, qos_profile_sensor_data)
+        self.create_subscription(Imu, topic, self.on_imu, qos_profile_sensor_data)
         self.create_timer(5.0, self.tick)
 
     def on_state(self, msg):
@@ -52,7 +54,7 @@ class ImuTelemetry(Node):
                     self.get_logger().warning(f'Attitude rate request failed: {exc}')
                 else:
                     self.get_logger().info(
-                        f'Attitude 30 Hz request acknowledged: {accepted}; '
+                        f'IMU message {self.message_id} 30 Hz request acknowledged: {accepted}; '
                         'measured rate is checked separately'
                     )
                 self.future = None
@@ -67,7 +69,7 @@ class ImuTelemetry(Node):
             return
         if now >= self.next_attempt and self.attempts < 3 and self.client.service_is_ready():
             self.future = self.client.call_async(
-                MessageInterval.Request(message_id=31, message_rate=30.0)
+                MessageInterval.Request(message_id=self.message_id, message_rate=30.0)
             )
             self.attempts += 1
             self.next_attempt = now + 15.0

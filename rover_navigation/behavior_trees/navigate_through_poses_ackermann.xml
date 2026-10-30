@@ -8,7 +8,7 @@
           <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
         </ReactiveSequence>
       </RateController>
-      <FollowPath path="{path}" controller_id="FollowPath"/>
+      <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="goal_checker"/>
     </PipelineSequence>
   </BehaviorTree>
 </root>

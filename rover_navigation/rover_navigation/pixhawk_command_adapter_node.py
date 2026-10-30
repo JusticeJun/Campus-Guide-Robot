@@ -9,13 +9,16 @@ from rclpy.node import Node
 from rclpy.signals import SignalHandlerOptions
 from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from std_msgs.msg import Bool
+from sensor_msgs.msg import LaserScan
 
 
-def bounded_motion(speed, yaw_rate, max_speed, minimum_turning_radius):
-    speed = max(0.0, min(float(speed), max_speed, 0.4))
+def bounded_motion(speed, yaw_rate, max_speed, minimum_turning_radius,
+                   max_reverse_speed=0.0):
+    speed = max(-min(max(0.0, max_reverse_speed), 0.4),
+                min(float(speed), max_speed, 0.4))
     if speed == 0.0:
         return 0.0, 0.0
-    max_yaw_rate = speed / minimum_turning_radius
+    max_yaw_rate = abs(speed) / minimum_turning_radius
     return speed, max(-max_yaw_rate, min(float(yaw_rate), max_yaw_rate))
 
 
@@ -47,8 +50,22 @@ class PixhawkCommandAdapter(Node):
         self.declare_parameter('command_timeout_s', 0.5)
         self.declare_parameter('publish_rate_hz', 10.0)
         self.declare_parameter('maximum_speed_m_s', 0.4)
+        self.declare_parameter('maximum_reverse_speed_m_s', 0.0)
         self.declare_parameter('minimum_turning_radius_m', 1.7)
         self.hold_on_fault = self.declare_parameter('hold_on_fault', False).value
+        self.require_externalnav = self.declare_parameter('require_externalnav', False).value
+        self.require_scan = self.declare_parameter('require_scan', False).value
+        self.scan_timeout = self.declare_parameter('scan_timeout_s', 2.0).value
+        self.scan_stamp = None
+        if self.require_scan:
+            self.create_subscription(LaserScan, '/scan_front', self.scan_callback,
+                                     qos_profile_sensor_data)
+        self.externalnav_ready = False
+        self.externalnav_at = -float('inf')
+        if self.require_externalnav:
+            self.create_subscription(
+                Bool, '/external_navigation/ready', self.externalnav_callback, 1
+            )
         self.hold_pending = self.guard_stop = False
         self.fcu_state = None
         self.fcu_state_time = -float('inf')
@@ -92,8 +109,38 @@ class PixhawkCommandAdapter(Node):
             msg.angular.z,
             self.get_parameter('maximum_speed_m_s').value,
             self.get_parameter('minimum_turning_radius_m').value,
+            self.get_parameter('maximum_reverse_speed_m_s').value,
         )
         self.last_command_time_ns = self.get_clock().now().nanoseconds
+
+    def externalnav_callback(self, msg):
+        """Consume readiness separately from upstream navigation readiness."""
+        self.externalnav_ready = msg.data
+        self.externalnav_at = time.monotonic()
+        if not msg.data:
+            self.publish_command()
+
+    def scan_callback(self, msg):
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        now = self.get_clock().now().nanoseconds * 1e-9
+        if msg.ranges and -0.1 <= now - stamp <= self.scan_timeout:
+            self.scan_stamp = stamp
+
+    def scan_blocked(self):
+        # Humble CollisionMonitor ignores stale sources instead of stopping.
+        # Pause output without HOLD/latching; fresh scan resumes the same goal.
+        if not getattr(self, 'require_scan', False):
+            return False
+        return self.scan_stamp is None or not -0.1 <= (
+            self.get_clock().now().nanoseconds * 1e-9 - self.scan_stamp
+        ) <= self.scan_timeout
+
+    def externalnav_blocked(self):
+        """Stop even if the bridge dies without publishing a final false value."""
+        # Match the guard's heartbeat grace period; do not extend command expiry.
+        return getattr(self, 'require_externalnav', False) and (
+            not self.externalnav_ready or time.monotonic() - self.externalnav_at > 2.0
+        )
 
     def state_callback(self, msg):
         self.fcu_state = msg
@@ -161,10 +208,15 @@ class PixhawkCommandAdapter(Node):
             <= self.get_clock().now().nanoseconds - self.last_command_time_ns
             <= timeout_ns
         )
-        if stale and self.last_command is not None and self.last_command[0] > 0.0:
+        if stale and self.last_command is not None and abs(self.last_command[0]) > 0.0:
             self.request_fault_hold('command watchdog expired during motion')
+        external_block = self.externalnav_blocked()
+        if external_block and self.last_command is not None and abs(self.last_command[0]) > 0.0:
+            self.request_fault_hold('external navigation unavailable')
         self.service_fault_hold()
-        blocked = stale or getattr(self, 'hold_pending', False)
+        blocked = (
+            stale or external_block or self.scan_blocked() or getattr(self, 'hold_pending', False)
+        )
         speed, yaw_rate = (0.0, 0.0) if blocked else (self.last_command or (0.0, 0.0))
         command = make_position_target(speed, yaw_rate)
         command.header.stamp = self.get_clock().now().to_msg()

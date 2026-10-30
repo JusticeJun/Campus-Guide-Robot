@@ -82,7 +82,8 @@ def guard():
         now=lambda: Time(clock_type=ClockType.ROS_TIME, seconds=now[0])
     )
     node.get_parameter = lambda key: SimpleNamespace(
-        value={'stable_duration_s': 3.0, 'path_timeout_s': 4.0, 'footprint_padding': 0.0}[key]
+        value={'stable_duration_s': 3.0, 'path_timeout_s': 4.0, 'footprint_padding': 0.0,
+               'maximum_reverse_speed_m_s': 0.0}[key]
     )
     node.publisher = SimpleNamespace(publish=lambda msg: outputs.append(msg.linear.x))
     node.ready_pub = SimpleNamespace(publish=lambda msg: None)

@@ -14,6 +14,7 @@ def subject():
     future.done.return_value = False
     client.call_async.return_value = future
     return SimpleNamespace(
+        message_id=31,
         connected=True,
         samples=deque(),
         attempts=0,
@@ -34,6 +35,15 @@ def test_only_session_attitude_request_with_bounded_retries():
         with patch('rover_navigation.imu_telemetry_node.time.monotonic', return_value=now):
             ImuTelemetry.tick(node)
     assert node.client.call_async.call_count == 3
+
+
+def test_raw_gyro_telemetry_uses_raw_imu_message_without_persistent_parameters():
+    node = subject()
+    node.message_id = 27
+    with patch('rover_navigation.imu_telemetry_node.time.monotonic', return_value=100):
+        ImuTelemetry.tick(node)
+    request = node.client.call_async.call_args.args[0]
+    assert request.message_id == 27 and request.message_rate == 30.0
 
 
 def test_disconnect_cancels_pending_and_reconnect_rearms_request():

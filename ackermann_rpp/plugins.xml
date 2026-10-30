@@ -1,0 +1,1 @@
+<library path="ackermann_rpp"><class name="ackermann_rpp::Controller" type="ackermann_rpp::Controller" base_class_type="nav2_core::Controller"><description>Ackermann RPP with feasible curvature, planned reversing and stopped gear changes.</description></class></library>

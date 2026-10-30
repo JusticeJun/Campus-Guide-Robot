@@ -3,7 +3,7 @@
 <package format="3">
   <name>rover_navigation</name>
   <version>0.0.0</version>
-  <description>GPS route planning and Nav2 integration for an Ackermann rover</description>
+  <description>Mapping, localization and Nav2 integration for the campus Ackermann rover</description>
   <maintainer email="ykk@todo.todo">ykk</maintainer>
   <license>TODO: License declaration</license>
 
@@ -19,10 +19,14 @@
   <exec_depend>mavros</exec_depend>
   <exec_depend>nav2_bringup</exec_depend>
   <exec_depend>localization_recovery_bt</exec_depend>
+  <exec_depend>ackermann_rpp</exec_depend>
   <exec_depend>nav2_msgs</exec_depend>
   <exec_depend>rtabmap_slam</exec_depend>
   <exec_depend>rtabmap_odom</exec_depend>
   <exec_depend>rtabmap_msgs</exec_depend>
+  <exec_depend>robot_localization</exec_depend>
+  <exec_depend>rplidar_ros</exec_depend>
+  <exec_depend>nav2_collision_monitor</exec_depend>
   <exec_depend>rtabmap_launch</exec_depend>
   <exec_depend>realsense2_camera</exec_depend>
   <exec_depend>rviz2</exec_depend>
@@ -30,6 +34,8 @@
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-pymavlink-pip</exec_depend>
   <exec_depend>python3-matplotlib</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>rmw_cyclonedds_cpp</exec_depend>

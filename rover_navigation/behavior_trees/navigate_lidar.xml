@@ -1,0 +1,48 @@
+<!-- Hold the goal while waiting/replanning. Planned reverse is followed by RPP;
+     no blind BackUp, spin or obstacle-clearing recovery actions. -->
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <OperatorPause>
+    <LocalizationReady>
+      <RecoveryNode number_of_retries="60" name="WaitAndReplan">
+        <PipelineSequence name="NavigateWithReplanning">
+          <RateController hz="2.0">
+            <Sequence>
+              <YieldToObstacle goal="{goal}" path_goal="{path_goal}">
+                <IsPathValid path="{path}" server_timeout="500"/>
+              </YieldToObstacle>
+              <Fallback name="ReplanOrKeepValid">
+                <Sequence>
+                  <SetBlackboard output_key="planning_goal" value="{goal}"/>
+                  <ComputePathToPose goal="{planning_goal}" path="{candidate_path}" planner_id="GridBased"/>
+                  <PathGoalMatches goal="{goal}" path_goal="{planning_goal}"/>
+                  <Fallback>
+                    <Sequence>
+                      <PathGoalMatches goal="{goal}" path_goal="{path_goal}"/>
+                      <IsPathValid path="{path}" server_timeout="500"/>
+                      <SelectEfficientPath candidate="{candidate_path}" current="{path}" selected="{path}"/>
+                    </Sequence>
+                    <Sequence>
+                      <SetBlackboard output_key="path" value="{candidate_path}"/>
+                      <SetBlackboard output_key="path_goal" value="{planning_goal}"/>
+                    </Sequence>
+                  </Fallback>
+                </Sequence>
+                <Sequence>
+                  <PathGoalMatches goal="{goal}" path_goal="{path_goal}"/>
+                  <IsPathValid path="{path}" server_timeout="500"/>
+                </Sequence>
+              </Fallback>
+            </Sequence>
+          </RateController>
+          <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="goal_checker"/>
+        </PipelineSequence>
+        <ReactiveFallback>
+          <GoalUpdated/>
+          <Wait wait_duration="3.0"/>
+        </ReactiveFallback>
+      </RecoveryNode>
+    </LocalizationReady>
+    </OperatorPause>
+  </BehaviorTree>
+</root>

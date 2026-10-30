@@ -1,0 +1,29 @@
+collision_monitor:
+  ros__parameters:
+    base_frame_id: base_link
+    odom_frame_id: odom
+    cmd_vel_in_topic: /cmd_vel_guarded
+    cmd_vel_out_topic: /cmd_vel_vehicle
+    transform_tolerance: 0.3
+    source_timeout: 2.0
+    base_shift_correction: true
+    # Keep explicit zero commands during an obstacle wait while Nav2 is active.
+    stop_pub_timeout: 1000000000.0
+    polygons: [FootprintApproach]
+    FootprintApproach:
+      type: polygon
+      action_type: approach
+      footprint_topic: /local_costmap/published_footprint
+      # Predict overlap along the feasible commanded velocity/turn-rate arc.
+      # This is a time horizon, not a fixed-distance front proximity zone.
+      # Uses the padded vehicle footprint; no pedestrian motion prediction.
+      time_before_collision: 4.0
+      simulation_time_step: 0.1
+      max_points: 2
+      visualize: false
+      enabled: true
+    observation_sources: [front_scan]
+    front_scan:
+      type: scan
+      topic: /scan_front
+      enabled: true

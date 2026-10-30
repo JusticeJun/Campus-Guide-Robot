@@ -1,0 +1,22 @@
+# Jetson 8GB / fixed-start campus localization. No node or feature pruning.
+# Experimental opt-in. Full remains the production default after a long replay
+# exposed coordinate divergence with an incomplete optimized map checkpoint.
+# These are working-set budgets, not hard byte/RSS limits. Native index updates
+# can still stall on CPU. A complete global checkpoint is required even when
+# only a small start neighborhood is loaded. Large/moving/lidar use is unqualified.
+startup_radius_m: 15.0
+startup_max_nodes: 400
+# Full-map coverage with lazy local-feature loading. Keep the native bit-wise
+# descriptor conversion: byte-wise conversion saves RAM but reduces matching
+# accuracy. The previous 2.443 GiB compact replay does not qualify this setting.
+full_parameters:
+  Mem/LoadVisualLocalFeaturesOnInit: false
+  Kp/ByteToFloat: false
+parameters:
+  Rtabmap/MemoryThr: 600
+  Rtabmap/TimeThr: 0
+  RGBD/LocalRadius: 15.0
+  RGBD/MaxLocalRetrieved: 10
+  RGBD/LocalImmunizationRatio: 0.5
+  Mem/RecentWmRatio: 0.2
+  Mem/LocalizationReadOnly: false

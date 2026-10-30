@@ -32,12 +32,17 @@ rtabmap:
   qos_imu: '2'
   # Keep camera/IMU callbacks responsive while visual odometry processes a frame.
   odom_always_process_most_recent_frame: 'true'
+  # A depth hole in sunlight must not hide an otherwise trackable RGB corner.
+  # Keep the same feature budget and geometric acceptance threshold.
   # VO needs a small, fast near-field map; localization needs wider appearance
   # coverage. Keep full RGB-D in odom_rgbd_image, decimate only VO computation.
   odom_args: >-
     --Odom/ImageDecimation 2
     --Vis/FeatureType 8 --Vis/MaxFeatures 1000 --Vis/MaxDepth 8.0
-    --Vis/DepthAsMask true --Vis/Iterations 300
+    --Vis/DepthAsMask false --Vis/Iterations 300
+    --Vis/GridRows 2 --Vis/GridCols 3
+    --Odom/Strategy 0 --Odom/ImageBufferSize 1
+    --OdomF2M/MaxSize 2000 --Odom/GuessMotion true
   args: >-
     --Rtabmap/DetectionRate 2.0
     --RGBD/LinearUpdate 0.10 --RGBD/AngularUpdate 0.10

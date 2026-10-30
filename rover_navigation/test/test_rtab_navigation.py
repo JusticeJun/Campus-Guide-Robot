@@ -16,7 +16,9 @@ from rover_navigation.navigation_profile import (
     load_profile,
     map_to_gps,
 )
-from rover_navigation.path_validation import path_is_clear, shared_footprint
+from rover_navigation.path_validation import (
+    apply_obstacle_clearance, path_is_clear, shared_footprint,
+)
 from rover_navigation.route_area import route_points, travel_grid
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -201,7 +203,7 @@ def test_static_costmaps_and_existing_vehicle_settings_are_preserved():
         assert p['track_unknown_space']
     planner = config['planner_server']['ros__parameters']['GridBased']
     assert not planner['allow_unknown']
-    assert planner['minimum_turning_radius'] == 1.7
+    assert planner['minimum_turning_radius'] == 2.0
     assert planner['motion_model_for_search'] == 'DUBIN'
     assert not planner['smooth_path']
 
@@ -218,7 +220,8 @@ def test_guard_latches_on_loss_and_never_auto_resumes():
     now, reason, outputs = [10.0], [''], []
     guard.get_clock = lambda: SimpleNamespace(now=lambda: Time(seconds=now[0]))
     guard.get_parameter = lambda name: SimpleNamespace(
-        value={'stable_duration_s': 3.0, 'path_timeout_s': 4.0}[name]
+        value={'stable_duration_s': 3.0, 'path_timeout_s': 4.0,
+               'maximum_reverse_speed_m_s': 0.0}[name]
     )
     guard.health_reason = lambda: reason[0]
     guard.report = lambda text: None
@@ -336,12 +339,32 @@ def test_mismatched_costmap_geometry_is_rejected():
 
 
 def test_corrected_width_excludes_distant_side_cell_but_checks_near_side():
-    footprint, padding = shared_footprint(yaml.safe_load(Path(PARAMS).read_text()))
+    footprint, _ = shared_footprint(yaml.safe_load(Path(PARAMS).read_text()))
+    padding = 0.05  # Test physical geometry separately from the navigation clearance.
     msg = grid()
     msg.data[23 * 100 + 20] = 100  # 0.35 m left: outside corrected body and margins.
     assert path_is_clear([pose(2, 2)], msg, footprint, padding)
     msg.data[21 * 100 + 20] = 100  # 0.15 m left: intersects body/padding.
     assert not path_is_clear([pose(2, 2)], msg, footprint, padding)
+
+
+@pytest.mark.parametrize('width,allowed', [(0.6, False), (0.8, True)])
+@pytest.mark.parametrize('old_padding', [0.05, 0.55])
+def test_clearance_rejects_tight_corridor_but_accepts_wide_route(width, allowed, old_padding):
+    config = yaml.safe_load(Path(PARAMS).read_text())
+    # Simulate a map snapshot saved before the clearance policy.
+    for name in ('local_costmap', 'global_costmap'):
+        config[name][name]['ros__parameters']['footprint_padding'] = old_padding
+    apply_obstacle_clearance(config)
+    footprint, padding = shared_footprint(config)
+    msg = grid()
+    msg.info.resolution = 0.05
+    # Free corridor centered on y=2; occupied space beyond both sides.
+    cells = np.zeros((100, 100), dtype=int)
+    yy = (np.arange(100) + 0.5) * 0.05
+    cells[abs(yy - 2) >= width / 2, :] = 100
+    msg.data = cells.flatten().tolist()
+    assert path_is_clear([pose(2, 2), pose(3, 2)], msg, footprint, padding) is allowed
 
 
 def test_guard_rejects_camera_parent_conflict():

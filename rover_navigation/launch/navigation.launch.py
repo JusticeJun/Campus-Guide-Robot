@@ -31,8 +31,36 @@ import yaml
 from rover_navigation.rtab_runtime import odometry_node, runtime_environment
 from rover_navigation.map_session import read_mapping, select_session
 from rover_navigation.localization_database import LocalizationDatabase, full_working_memory_saved
-from rover_navigation.path_validation import shared_footprint
+from rover_navigation.path_validation import apply_obstacle_clearance, shared_footprint
 from rover_navigation.speed_policy import apply_speed_policy
+from rover_navigation.startup_pose import load_startup_pose
+from rover_navigation.multisensor_runtime import (
+    fused_nodes, scan_arguments, registration_arguments,
+)
+from rover_navigation.lidar_navigation import configure_obstacles
+
+
+def allow_long_planner_search(params):
+    """Allow distant-goal searches, including maps saved with older limits."""
+    planner = params.get('planner_server', {}).get('ros__parameters', {})
+    for name in planner.get('planner_plugins', []):
+        plugin = planner.get(name, {})
+        if plugin.get('plugin') == 'nav2_smac_planner/SmacPlannerHybrid':
+            plugin['max_iterations'] = -1
+            # Humble interprets zero seconds as an immediate timeout.
+            plugin['max_planning_time'] = 1000000000.0
+
+
+def apply_turning_geometry(params):
+    """Plan at 2 m, keeping 1.7 m command curvature available for correction."""
+    planner = params.get('planner_server', {}).get('ros__parameters', {})
+    for name in planner.get('planner_plugins', []):
+        plugin = planner.get(name, {})
+        if plugin.get('plugin') == 'nav2_smac_planner/SmacPlannerHybrid':
+            plugin['minimum_turning_radius'] = 2.0
+            plugin['analytic_expansion_max_length'] = max(
+                10.0, float(plugin.get('analytic_expansion_max_length', 10.0))
+            )
 
 
 def cache_static_planner_heuristic(params, needs_route):
@@ -69,15 +97,28 @@ def setup_navigation(context):
         return LaunchConfiguration(name).perform(context)
 
     mode = value('mode')
+    fcu_estimation = value('fcu_estimation')
+    if fcu_estimation not in ('gps', 'externalnav'):
+        raise ValueError('fcu_estimation must be gps or externalnav')
+    externalnav = fcu_estimation == 'externalnav' and mode != 'planner'
+    transmit = value('externalnav_transmit').lower()
+    if transmit == 'auto':
+        transmit = 'true' if mode in ('drive', 'validation') else 'false'
+    if transmit not in ('true', 'false'):
+        raise ValueError('externalnav_transmit must be auto, true or false')
+    if externalnav and mode == 'drive' and transmit != 'true':
+        raise ValueError('ExternalNav drive requires externalnav_transmit:=true')
     switches = {}
     for name in (
         'start_mavros',
         'start_camera',
+        'start_lidar',
         'start_camera_tf',
         'rviz',
         'record_bag',
         'copy_database',
         'reuse_database',
+        'use_startup_pose',
     ):
         if value(name).lower() not in ('true', 'false'):
             raise ValueError(f'{name} must be true or false')
@@ -103,6 +144,31 @@ def setup_navigation(context):
         route_required=needs_route,
     )
     runtime = read_mapping(localization_file)
+    scan_map = runtime.get('sensor_mode', 'rgbd') == 'rgbd_lidar'
+    odom_choice = value('local_odometry')
+    if odom_choice not in ('auto', 'camera', 'fused'):
+        raise ValueError('local_odometry must be auto, camera or fused')
+    fused = scan_map if odom_choice == 'auto' else odom_choice == 'fused'
+    obstacle_choice = value('lidar_obstacles')
+    if obstacle_choice not in ('auto', 'true', 'false'):
+        raise ValueError('lidar_obstacles must be auto, true or false')
+    lidar_obstacles = (
+        (scan_map or fused) if obstacle_choice == 'auto' else obstacle_choice == 'true'
+    )
+    if scan_map and not fused:
+        raise ValueError('Camera+lidar maps require their fused local odometry profile')
+    health_remaps = ([('/rtabmap/odom_info_lite', '/localization/odom_info')]
+                     if fused else [])
+    memory_mode = value('localization_memory')
+    if memory_mode not in ('auto', 'full'):
+        raise ValueError('localization_memory must be auto or full')
+    if mode != 'planner' and memory_mode == 'auto' and not switches['copy_database']:
+        raise ValueError('automatic memory management requires a private database copy')
+    startup_pose, startup_message = '', ''
+    if mode != 'planner' and switches['use_startup_pose']:
+        startup_pose, startup_message = load_startup_pose(
+            Path(profile_path).parent / 'startup_pose.yaml', profile['database'], profile['map']
+        )
     if (
         needs_route
         and mode != 'planner'
@@ -117,11 +183,32 @@ def setup_navigation(context):
     bt_params.setdefault('bt_loop_duration', 50)
     bt_params.setdefault('default_server_timeout', 1000)
     turn_speed = apply_speed_policy(nav_params, value('turn_speed_m_s'))
+    allow_long_planner_search(nav_params)
+    apply_turning_geometry(nav_params)
+    if lidar_obstacles:
+        configure_obstacles(nav_params)
+    apply_obstacle_clearance(nav_params, lidar_obstacles=lidar_obstacles)
+    # Selected only by campus observation missions; existing RViz/default
+    # FollowPath goal checker and its tolerances are unchanged.
+    goal_params = nav_params['controller_server']['ros__parameters']
+    goal_plugins = goal_params.setdefault('goal_checker_plugins', ['goal_checker'])
+    if 'observation_goal_checker' not in goal_plugins:
+        goal_plugins.append('observation_goal_checker')
+    goal_params['observation_goal_checker'] = {
+        'plugin': 'nav2_controller::SimpleGoalChecker',
+        'stateful': True, 'xy_goal_tolerance': 0.45, 'yaw_goal_tolerance': 0.25,
+    }
     cache_static_planner_heuristic(nav_params, needs_route)
     # Apply to old per-map YAML too. Validation exercises the same guard as drive.
     nav_params.setdefault('localization_guard', {}).setdefault('ros__parameters', {}).update(
-        {'strict_tracking_safety': True, 'tracking_max_age_s': 2.5}
+        {'strict_tracking_safety': True, 'tracking_max_age_s': 2.5,
+         'covariance_grace_s': 1.0 if fused else 0.0,
+         'tracking_loss_grace_s': 1.0 if fused else 0.0}
     )
+    if externalnav:
+        # Match the bounded ExternalNav input-gap budget. The bridge still
+        # enforces its configured cutoff and FCU health independently.
+        nav_params['localization_guard']['ros__parameters']['odometry_timeout_s'] = 2.0
     footprint, footprint_padding = shared_footprint(nav_params)
     share = get_package_share_directory('rover_navigation')
     session = Path(value('log_root')).expanduser() / datetime.now().strftime('%Y%m%d_%H%M%S_%f')
@@ -131,9 +218,17 @@ def setup_navigation(context):
         yaml.safe_dump(
             {
                 'mode': mode,
+                'fcu_estimation': fcu_estimation,
+                'externalnav_transmit': externalnav and transmit == 'true',
                 'route_policy': policy,
                 'destination': value('destination'),
                 'goal_input': 'legacy_route' if needs_route else 'nav2_action',
+                'startup_pose': startup_pose,
+                'startup_pose_message': startup_message,
+                'localization_memory': memory_mode,
+                'local_odometry': 'fused' if fused else 'camera',
+                'lidar_obstacles': lidar_obstacles,
+                'map_sensor_mode': runtime.get('sensor_mode', 'rgbd'),
                 **switches,
                 'record_camera': record_camera == 'true',
                 'speed_policy': {
@@ -177,6 +272,9 @@ def setup_navigation(context):
             ),
         ),
     }
+    if lidar_obstacles and not needs_route:
+        rewrites['default_nav_to_pose_bt_xml'] = os.path.join(
+            share, 'behavior_trees', 'navigate_lidar.xml')
     for name in ('local_costmap', 'global_costmap'):
         rewrites[f'{name}.{name}.ros__parameters.route_layer.enabled'] = (
             'true' if mode != 'planner' and needs_route else 'false'
@@ -186,11 +284,28 @@ def setup_navigation(context):
     )
     actions = [LogInfo(msg=f'Navigation session: {session}')]
     if mode != 'planner':
+        if externalnav:
+            external_config = value('externalnav_config') or os.path.join(
+                share, 'config', 'external_navigation.yaml'
+            )
+            actions.append(
+                Node(
+                    package='rover_navigation',
+                    executable='external_navigation',
+                    name='external_navigation',
+                    output='screen',
+                    parameters=[external_config, {'transmit': transmit == 'true'}],
+                    remappings=health_remaps,
+                )
+            )
         actions.append(
             Node(
                 package='rover_navigation',
                 executable='drive_trace',
                 name='drive_trace',
+                remappings=([('/rtabmap/odom_info_lite', '/vo/odom_info_lite')]
+                            if fused else []),
+                prefix='nice -n 10',
                 output='screen',
                 parameters=[
                     {
@@ -224,12 +339,27 @@ def setup_navigation(context):
                             PythonLaunchDescriptionSource(
                                 os.path.join(share, 'launch', 'camera.launch.py')
                             ),
-                            launch_arguments={'runtime_file': localization_file}.items(),
+                            # navigation owns this TF via start_camera_tf.
+                            launch_arguments={
+                                'runtime_file': localization_file,
+                                'publish_camera_tf': 'false',
+                            }.items(),
                         ),
                     ],
                     forwarding=False,
                 )
             )
+        if switches['start_lidar']:
+            actions.append(GroupAction([
+                *runtime_environment(),
+                IncludeLaunchDescription(
+                    PythonLaunchDescriptionSource(os.path.join(
+                        share, 'launch', 'lidar.launch.py')),
+                    launch_arguments={
+                        'serial_port': value('lidar_port'), 'yaw': value('lidar_yaw'),
+                    }.items(),
+                ),
+            ], forwarding=False))
         topics = [
             '/rosout',
             '/map',
@@ -317,6 +447,11 @@ def setup_navigation(context):
         )
     )
     lifecycle = ['map_server']
+    if lidar_obstacles:
+        actions.append(Node(
+            package='rover_navigation', executable='static_clearance', name='static_clearance',
+            output='screen', parameters=[{'extra_margin_m': 0.0}],
+        ))
     if mode == 'planner':
         actions.append(
             Node(
@@ -383,7 +518,8 @@ def setup_navigation(context):
         # same stamp as /odom. Do not sync delayed /odom against the live 15 Hz
         # camera queue a second time (10 images retain only ~0.67 seconds).
         rtab_config = runtime['rtabmap']
-        actions.append(odometry_node(profile, rtab_config))
+        actions.extend(fused_nodes(profile, rtab_config) if fused
+                       else [odometry_node(profile, rtab_config)])
         rtab_args = {
             **rtab_config,
             'database_path': str(database),
@@ -406,36 +542,120 @@ def setup_navigation(context):
             'gps_topic': '/navigation/unused/gps/fix',
             **{key: profile[key] for key in ('rgb_topic', 'depth_topic', 'camera_info_topic')},
         }
+        # VO must remain responsive regardless of the selected FCU speed source.
+        # Map matching can wait for CPU without changing geometric checks.
+        # The odometry node above stays at normal priority.
+        rtab_args['launch_prefix'] = 'nice -n 5'
+        if fused:
+            rtab_args.update({'rgbd_topic': '/vo/odom_rgbd_image', 'odom_frame_id': 'odom'})
+        if scan_map:
+            rtab_args.update(scan_arguments(rtab_config))
+        if startup_pose:
+            # One startup guess, not a TF publisher or an accepted-localization event.
+            # RViz /initialpose can still replace it; no localization is fabricated.
+            rtab_args['initial_pose'] = startup_pose
+        elif not switches['use_startup_pose']:
+            rtab_args['initial_pose'] = ''
+        if startup_message:
+            actions.append(LogInfo(msg=startup_message))
+        local_memory = memory_mode == 'auto' and bool(startup_pose)
         # Reuse RTAB's own index, without narrowing the set of searchable nodes.
         # A first/unfinished session still loads all nodes; the next clean full
         # checkpoint can restore the same coverage and its serialized index.
-        restore_memory = (
-            not switches['copy_database'] or (database_lease and database_lease.ready())
-        ) and full_working_memory_saved(database)
+        # Local seeding replaces the checkpoint/index anyway; avoid scanning
+        # every Word row in a large map just to decide whether to reuse it.
         rtab_args['args'] = rtab_config.get('args', '') + ' --Kp/FlannIndexSaved true'
-        if restore_memory:
-            rtab_args['args'] += ' --Mem/InitWMWithAllNodes false'
-        rtab_action = GroupAction(
-            [
-                *runtime_environment(),
-                SetParameter(name='pub_loc_pose_only_when_localizing', value=True),
-                # Nav2 already uses the exported occupancy via map_server.
-                # Avoid loading every stored local grid into a second map cache.
-                SetParameter(name='map_cache_loaded_on_init', value=False),
-                SetRemap(src='initialpose', dst='/initialpose'),
-                IncludeLaunchDescription(
-                    PythonLaunchDescriptionSource(
-                        os.path.join(
-                            get_package_share_directory('rtabmap_launch'),
-                            'launch',
-                            'rtabmap.launch.py',
-                        )
-                    ),
-                    launch_arguments=rtab_args.items(),
-                ),
-            ],
-            forwarding=False,
+        if scan_map:
+            rtab_args['args'] += registration_arguments()
+        # A seeded subset is enabled only after the asynchronous preparation
+        # below succeeds. Keep VO extraction and geometric validation unchanged.
+        memory_policy = read_mapping(Path(share) / 'config/localization_memory.yaml')
+        memory_parameters = memory_policy['parameters']
+        if not 30 <= int(memory_policy['startup_max_nodes']) <= int(
+            memory_parameters['Rtabmap/MemoryThr']
+        ):
+            raise ValueError('startup memory must contain 30..MemoryThr nodes')
+        if memory_mode == 'auto':
+            rtab_args['args'] += (
+                ' --Mem/LoadVisualLocalFeaturesOnInit false --Rtabmap/PublishRAMUsage true'
+            )
+        else:
+            rtab_args['args'] += ''.join(
+                f' --{key} {str(setting).lower()}'
+                for key, setting in memory_policy['full_parameters'].items()
+            )
+        if local_memory:
+            rtab_args['args'] += ''.join(
+                f' --{key} {str(setting).lower()}' for key, setting in memory_parameters.items()
+            )
+        else:
+            rtab_args['args'] += ' --Rtabmap/MemoryThr 0 --Rtabmap/TimeThr 0'
+
+        memory_report = session / 'memory.json'
+        memory_prepare = ExecuteProcess(
+            cmd=['python3', '-m', 'rover_navigation.localization_memory',
+                 '--database', str(database), '--pose', startup_pose,
+                 '--source', profile['database'], '--mode', memory_mode,
+                 '--radius', str(memory_policy['startup_radius_m']),
+                 '--nodes', str(memory_policy['startup_max_nodes']),
+                 '--report', str(memory_report)],
+            name='prepare_localization_memory', output='screen',
         )
+
+        def memory_prepared(event, context):
+            if event.returncode:
+                return [EmitEvent(event=Shutdown(reason='localization memory preparation failed'))]
+            report = json.loads(memory_report.read_text())
+            # IncludeLaunchDescription captured its launch arguments at creation.
+            # Build it after preparation so native startup sees the chosen set.
+            if report['seeded']:
+                # This index is invalidated by the next startup selection.
+                # Native serialization allocates a temporary 1 GiB buffer;
+                # do not spend RAM/I/O saving an index we cannot reuse.
+                rtab_args['args'] += (
+                    ' --Mem/InitWMWithAllNodes false --Optimizer/PriorsIgnored false'
+                    ' --Kp/FlannIndexSaved false'
+                )
+            else:
+                # Cold/interrupted source must finish a complete checkpoint
+                # before native checkpoint/index reuse. Decide AFTER preparation:
+                # restoring an experimental subset can change its membership.
+                # Never override a valid full checkpoint with a forced rebuild.
+                restore_memory = full_working_memory_saved(database)
+                rtab_args['args'] += (
+                    ' --Mem/InitWMWithAllNodes ' + str(not restore_memory).lower()
+                    + ' --Rtabmap/MemoryThr 0'
+                )
+            return [LogInfo(msg=f'Localization memory: {report}'), make_rtab_action()]
+
+        def make_rtab_action():
+            return GroupAction(
+                [
+                    *runtime_environment(),
+                    SetParameter(name='pub_loc_pose_only_when_localizing', value=True),
+                    SetParameter(name='map_cache_loaded_on_init', value=False),
+                    SetRemap(src='initialpose', dst='/initialpose'),
+                    IncludeLaunchDescription(
+                        PythonLaunchDescriptionSource(os.path.join(
+                            get_package_share_directory('rtabmap_launch'),
+                            'launch', 'rtabmap.launch.py')),
+                        launch_arguments=rtab_args.items(),
+                    ),
+                ], forwarding=False,
+            )
+
+        def start_localization():
+            if local_memory or database.with_suffix('.global_graph.json').exists():
+                return [RegisterEventHandler(OnProcessExit(
+                    target_action=memory_prepare, on_exit=memory_prepared)), memory_prepare]
+            # No adapter sidecar: still select the native saved full index after
+            # the asynchronous copy, rather than capturing arguments beforehand.
+            restore_memory = full_working_memory_saved(database)
+            rtab_args['args'] += (
+                ' --Mem/InitWMWithAllNodes ' + str(not restore_memory).lower()
+            )
+            return [make_rtab_action()]
+
         # Copy outside the launch event loop. Sensors, odometry and RViz can
         # start while the private DB is prepared; RTAB waits for successful exit.
         database_copy = ExecuteProcess(
@@ -462,11 +682,12 @@ def setup_navigation(context):
                             event=Shutdown(reason='localization database preparation failed')
                         ),
                     ]
-            return [LogInfo(msg='Localization database ready; starting RTAB-Map'), rtab_action]
+            return [LogInfo(msg='Localization database ready'), *start_localization()]
 
         if database_lease and database_lease.ready():
             actions.extend(
-                [LogInfo(msg=f'Reusing private localization database: {database}'), rtab_action]
+                [LogInfo(msg=f'Reusing private localization database: {database}'),
+                 *start_localization()]
             )
         elif switches['copy_database']:
             actions.extend(
@@ -481,7 +702,7 @@ def setup_navigation(context):
             actions.extend(
                 [
                     LogInfo(msg='Using source database directly; RTAB-Map may write to it'),
-                    rtab_action,
+                    *start_localization(),
                 ]
             )
         actions.extend(
@@ -505,10 +726,13 @@ def setup_navigation(context):
                     executable='localization_guard',
                     name='localization_guard',
                     output='screen',
+                    remappings=health_remaps,
                     parameters=[
                         params,
                         {
                             'goal_source': 'route' if needs_route else 'nav2',
+                            'require_externalnav': externalnav,
+                            'maximum_reverse_speed_m_s': 0.4 if lidar_obstacles else 0.0,
                             # Normal navigation trusts native RTAB registration once,
                             # then tracks live odometry/TF. Research verdicts do not gate it.
                             'enable_coarse_hint_handoff': False,
@@ -563,6 +787,15 @@ def setup_navigation(context):
                     ),
                 ]
             )
+        if lidar_obstacles:
+            actions.extend([
+                Node(package='nav2_collision_monitor', executable='collision_monitor',
+                     name='collision_monitor', output='screen',
+                     parameters=[os.path.join(share, 'config/collision_monitor.yaml')]),
+                Node(package='nav2_lifecycle_manager', executable='lifecycle_manager',
+                     name='lifecycle_manager_collision', output='screen',
+                     parameters=[{'autostart': True, 'node_names': ['collision_monitor']}]),
+            ])
         if mode == 'drive':
             actions.append(
                 Node(
@@ -572,9 +805,14 @@ def setup_navigation(context):
                     output='screen',
                     parameters=[
                         {
-                            'cmd_vel_topic': '/cmd_vel_guarded',
+                            'cmd_vel_topic': ('/cmd_vel_vehicle' if lidar_obstacles
+                                              else '/cmd_vel_guarded'),
                             'maximum_speed_m_s': 0.4,
+                            'maximum_reverse_speed_m_s': 0.4 if lidar_obstacles else 0.0,
+                            'minimum_turning_radius_m': 1.7,
                             'hold_on_fault': True,
+                            'require_externalnav': externalnav,
+                            'require_scan': lidar_obstacles,
                         }
                     ],
                 )
@@ -584,6 +822,7 @@ def setup_navigation(context):
             Node(
                 package='rviz2',
                 executable='rviz2',
+                prefix='nice -n 10',
                 output='screen',
                 arguments=['-d', os.path.join(share, 'config', 'navigation.rviz')],
             )
@@ -605,6 +844,9 @@ def generate_launch_description():
         [
             *runtime_environment(),
             DeclareLaunchArgument('mode', default_value='planner'),
+            DeclareLaunchArgument('fcu_estimation', default_value='externalnav'),
+            DeclareLaunchArgument('externalnav_transmit', default_value='auto'),
+            DeclareLaunchArgument('externalnav_config', default_value=''),
             # Shutdown timers evaluate launch configurations when shutdown starts,
             # after scoped groups have exited. Keep this configuration at root scope.
             # A large repaired dictionary needs more than the default five seconds.
@@ -623,15 +865,35 @@ def generate_launch_description():
             DeclareLaunchArgument('database', default_value=''),
             DeclareLaunchArgument('map', default_value=''),
             DeclareLaunchArgument('destination', default_value=''),
-            DeclareLaunchArgument('start_mavros', default_value='false'),
-            DeclareLaunchArgument('start_camera', default_value='false'),
+            DeclareLaunchArgument('start_mavros', default_value='false',
+                                  description='Opt in only when MAVROS is not running separately'),
+            DeclareLaunchArgument('start_camera', default_value='false',
+                                  description=(
+                                      'Opt in only when camera.launch.py '
+                                      'is not running separately')),
+            DeclareLaunchArgument('start_lidar', default_value='false',
+                                  description=(
+                                      'Opt in only when lidar.launch.py '
+                                      'is not running separately')),
+            DeclareLaunchArgument('lidar_port', default_value='/dev/ttyUSB0'),
+            DeclareLaunchArgument('lidar_yaw', default_value='0.0'),
             DeclareLaunchArgument(
                 'start_camera_tf',
-                default_value='true',
-                description='Publish base_link -> camera_link; disable when provided externally',
+                default_value=LaunchConfiguration('start_camera'),
+                description='Defaults to start_camera: external camera owns its TF; '
+                            'embedded camera gets exactly one mounting TF here',
             ),
             DeclareLaunchArgument('fcu_url', default_value='serial:///dev/ttyACM0:115200'),
             DeclareLaunchArgument('rviz', default_value='false'),
+            DeclareLaunchArgument(
+                'local_odometry', default_value='auto',
+                description='auto follows the map sensor profile; camera or fused'),
+            DeclareLaunchArgument('lidar_obstacles', default_value='auto',
+                                  description='auto enables scan avoidance with fused odometry'),
+            DeclareLaunchArgument(
+                'use_startup_pose', default_value='true',
+                description='Use this map\'s verified startup_pose.yaml as a one-time RTAB hint',
+            ),
             DeclareLaunchArgument(
                 'localization_file',
                 default_value='',
@@ -660,6 +922,10 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 'database_cache_root',
                 default_value=os.path.expanduser('~/ros2_ws/.cache/localization'),
+            ),
+            DeclareLaunchArgument(
+                'localization_memory', default_value='full',
+                description='full: production full-map loading; auto: experimental bounded WM',
             ),
             DeclareLaunchArgument(
                 'turn_speed_m_s',

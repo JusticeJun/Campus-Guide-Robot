@@ -18,6 +18,9 @@ from rover_navigation.map_session import read_mapping
 
 def setup(context):
     runtime = read_mapping(LaunchConfiguration('runtime_file').perform(context))
+    publish_tf = LaunchConfiguration('publish_camera_tf').perform(context).lower()
+    if publish_tf not in ('true', 'false'):
+        raise ValueError('publish_camera_tf must be true or false')
     actions = [
         GroupAction(
             [
@@ -35,6 +38,20 @@ def setup(context):
             forwarding=False,
         )
     ]
+    if publish_tf == 'true':
+        x, y, z, roll, pitch, yaw = runtime['profile']['base_to_camera']
+        actions.append(
+            Node(
+                package='tf2_ros',
+                executable='static_transform_publisher',
+                name='base_to_camera',
+                arguments=[
+                    '--x', str(x), '--y', str(y), '--z', str(z),
+                    '--roll', str(roll), '--pitch', str(pitch), '--yaw', str(yaw),
+                    '--frame-id', 'base_link', '--child-frame-id', 'camera_link',
+                ],
+            )
+        )
     # Gravity orientation from camera gyro/accel; camera driver owns sensor TFs.
     if 'imu_filter' in runtime:
         config = runtime['imu_filter']
@@ -63,6 +80,7 @@ def generate_launch_description():
         [
             *runtime_environment(),
             DeclareLaunchArgument('runtime_file', default_value=default),
+            DeclareLaunchArgument('publish_camera_tf', default_value='true'),
             OpaqueFunction(function=setup),
         ]
     )
