@@ -30,7 +30,7 @@ cd ~/ros2_ws
 git clone https://github.com/JusticeJun/Campus-Guide-Robot.git src
 source /opt/ros/humble/setup.bash
 rosdep install --from-paths src --ignore-src -r -y --rosdistro humble
-colcon build --symlink-install --packages-select localization_recovery_bt gps_navigator
+colcon build --symlink-install --packages-select localization_recovery_bt rover_navigation
 source install/setup.bash
 ```
 
@@ -47,7 +47,7 @@ tmux를 사용하려면 `sudo apt install tmux`가 필요하다.
 
 | 경로 | 역할 |
 |---|---|
-| `gps_navigator/` | ROS 노드, launch, 설정, Python 테스트 |
+| `rover_navigation/` | ROS 노드, launch, 설정, Python 테스트 |
 | `localization_recovery_bt/` | Nav2 위치추정 대기 BT 플러그인과 C++ 테스트 |
 | `tools/ros_session*.sh` | 연결 끊김에 대비한 실행·로그 접속 도구 |
 | [실행 안내](docs/navigation.md) | 지도 생성·저장·주행·복구 명령 |
@@ -61,7 +61,7 @@ tmux를 사용하려면 `sudo apt install tmux`가 필요하다.
 cd ~/ros2_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
-PYTHONNOUSERSITE=1 colcon test --packages-select gps_navigator localization_recovery_bt \
+PYTHONNOUSERSITE=1 colcon test --packages-select rover_navigation localization_recovery_bt \
   --event-handlers console_direct+
 colcon test-result --verbose
 ```
