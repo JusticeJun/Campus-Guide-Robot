@@ -44,6 +44,17 @@ def test_command_adapter_enforces_forward_speed_and_turning_radius():
     assert bounded_motion(-0.2, 0.5, 0.6, 1.7) == (0.0, 0.0)
 
 
+@pytest.mark.parametrize('v', [.25, .3, .35, .4, .8])
+@pytest.mark.parametrize('w', [-1.0, -.08, .0, .08, 1.0])
+def test_reverse_enabled_has_symmetric_speed_curvature_limits(v, w):
+    forward = bounded_motion(v, w, .4, 1.7, .4)
+    reverse = bounded_motion(-v, -w, .4, 1.7, .4)
+    assert reverse == pytest.approx((-forward[0], -forward[1]))
+    target = make_position_target(*reverse)
+    assert target.velocity.x < 0 and target.yaw_rate == reverse[1]
+    assert not target.type_mask & target.IGNORE_YAW_RATE
+
+
 def test_mavros_command_uses_body_forward_velocity_and_yaw_rate():
     command = make_position_target(0.4, -0.2)
     assert command.coordinate_frame == command.FRAME_BODY_NED
@@ -63,6 +74,7 @@ def test_adapter_watchdog_expires_without_replaying_last_motion():
         value={
             'command_timeout_s': 0.5,
             'maximum_speed_m_s': 0.4,
+            'maximum_reverse_speed_m_s': 0.0,
             'minimum_turning_radius_m': 1.7,
         }[key]
     )
@@ -91,6 +103,7 @@ def test_adapter_invalid_command_immediately_discards_previous_motion(invalid):
         value={
             'command_timeout_s': 0.5,
             'maximum_speed_m_s': 0.4,
+            'maximum_reverse_speed_m_s': 0.0,
             'minimum_turning_radius_m': 1.7,
         }[key]
     )
@@ -133,6 +146,7 @@ def hold_adapter(monkeypatch):
         value={
             'command_timeout_s': 0.5,
             'maximum_speed_m_s': 0.4,
+            'maximum_reverse_speed_m_s': 0.0,
             'minimum_turning_radius_m': 1.7,
         }[key]
     )
@@ -172,6 +186,24 @@ def test_fault_requires_hold_telemetry_and_guard_ack_before_accepting_new_motion
     node.publish_command()
     assert outputs[-1].velocity.x == 0.0
     assert all(request.custom_mode == 'HOLD' for request, _ in calls)
+
+
+def test_reverse_watchdog_zeros_and_requests_hold(hold_adapter):
+    from mavros_msgs.msg import State
+    node, now, calls, outputs = hold_adapter
+    original = node.get_parameter
+    node.get_parameter = lambda key: (SimpleNamespace(value=.4)
+                                      if key == 'maximum_reverse_speed_m_s' else original(key))
+    node.state_callback(State(connected=True, mode='GUIDED'))
+    command = Twist()
+    command.linear.x = -.35
+    node.command_callback(command)
+    node.publish_command()
+    assert outputs[-1].velocity.x == -.35
+    now[0] += .6
+    node.publish_command()
+    assert outputs[-1].velocity.x == 0.
+    assert calls and calls[-1][0].custom_mode == 'HOLD'
 
 
 def test_fault_hold_retries_unanswered_request_and_preserves_manual_override(hold_adapter):

@@ -7,6 +7,7 @@ Visualization Manager:
   Class: ''
   Global Options:
     Fixed Frame: map
+    Frame Rate: 2
     Background Color: 48; 48; 48
   Displays:
     - Class: rviz_default_plugins/Map
@@ -30,6 +31,19 @@ Visualization Manager:
       Enabled: true
       Topic:
         Value: /local_costmap/published_footprint
+    - Class: rviz_default_plugins/LaserScan
+      Name: Front lidar (200 deg)
+      Enabled: true
+      Topic:
+        Value: /scan_front
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+        Depth: 1
+      Style: Points
+      Size (Pixels): 3
+      Decay Time: 0
+      Color Transformer: FlatColor
+      Color: 255; 80; 80
   Tools:
     - Class: rviz_default_plugins/MoveCamera
     - Class: rviz_default_plugins/Select

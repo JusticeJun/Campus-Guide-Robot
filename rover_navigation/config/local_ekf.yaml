@@ -1,0 +1,30 @@
+local_ekf:
+  ros__parameters:
+    frequency: 20.0
+    sensor_timeout: 0.2
+    two_d_mode: true
+    publish_tf: false  # fusion_inputs is the sole validated odom -> base_link owner
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_link
+    world_frame: odom
+    transform_timeout: 0.0
+    print_diagnostics: true
+    reset_on_time_jump: true
+    predict_to_current_time: true
+    # Visual results arrive later than scan/gyro; replay a bounded EKF history.
+    smooth_lagged_data: true
+    history_length: 1.5
+    odom0: /localization/visual_measurement
+    odom0_config: [true, true, false, false, false, true, false, false, false, false, false, false, false, false, false]
+    odom0_queue_size: 10
+    odom1: /localization/lidar_measurement
+    # Independent VO/LIO trajectories drift apart. Keep visual pose as the
+    # local reference and fuse lidar's measured body velocity, not a second
+    # absolute pose competing for x/y/yaw. Lidar still supports camera loss.
+    odom1_config: [false, false, false, false, false, false, true, true, false, false, false, true, false, false, false]
+    odom1_queue_size: 15
+    imu0: /localization/fcu_gyro
+    imu0_config: [false, false, false, false, false, false, false, false, false, false, false, true, false, false, false]
+    imu0_queue_size: 30
+    use_control: false

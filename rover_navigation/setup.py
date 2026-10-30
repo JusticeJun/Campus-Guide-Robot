@@ -18,7 +18,8 @@ setup(
             glob('config/*.yaml')
             + glob('config/*.rviz')
             + glob('config/*.xml')
-            + glob('config/*.sh'),
+            + glob('config/*.sh')
+            + glob('config/*.param'),
         ),
         (os.path.join('share', package_name, 'behavior_trees'), glob('behavior_trees/*.xml')),
     ],
@@ -26,7 +27,7 @@ setup(
     zip_safe=True,
     maintainer='ykk',
     maintainer_email='ykk@todo.todo',
-    description='GPS route planning and Nav2 integration for an Ackermann rover',
+    description='Mapping, localization and Nav2 integration for the campus Ackermann rover',
     license='TODO: License declaration',
     extras_require={
         'test': [
@@ -35,7 +36,11 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'static_clearance = rover_navigation.static_clearance_node:main',
+            'fusion_inputs = rover_navigation.fusion_node:main',
+            'front_scan = rover_navigation.lidar_filter_node:main',
             'imu_telemetry = rover_navigation.imu_telemetry_node:main',
+            'external_navigation = rover_navigation.external_navigation_node:main',
             'path_planner = rover_navigation.path_planner_node:main',
             'localization_guard = rover_navigation.localization_guard_node:main',
             'drive_trace = rover_navigation.drive_trace_node:main',

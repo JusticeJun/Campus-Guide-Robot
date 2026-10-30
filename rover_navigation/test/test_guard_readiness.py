@@ -57,6 +57,53 @@ def test_explicit_tracking_loss_stops_in_callback_and_never_auto_resumes(strict_
         assert commands[-1] == 0.0 and readiness[-1] is False
 
 
+def test_lidar_reverse_passes_guard_but_tracking_loss_still_stops(strict_runtime):
+    guard, update, _, readiness, commands = strict_runtime
+    original = guard.get_parameter
+    guard.get_parameter = lambda key: (SimpleNamespace(value=.4)
+                                       if key == 'maximum_reverse_speed_m_s' else original(key))
+    guard.command.linear.x = -.35
+    update(13.2)
+    guard.tick()
+    assert readiness[-1] and commands[-1] == -.35
+    lost = OdomInfo(lost=True)
+    lost.header.stamp = ros_time(13.2).to_msg()
+    guard.odom_info_callback(lost)
+    assert commands[-1] == 0. and not readiness[-1]
+
+
+def test_fused_brief_loss_zeroes_without_cancel_and_recovers_same_goal(strict_runtime):
+    guard, update, _, readiness, commands = strict_runtime
+    guard.tracking_loss_grace_s = 1.0
+    guard.odom_info_callback(OdomInfo(lost=True))
+    assert commands[-1] == 0.0 and not readiness[-1]
+    assert not guard.latched
+    update(13.6)
+    guard.tick()
+    assert commands[-1] == 0.0 and not guard.latched
+    guard.odom_info.lost = False
+    update(13.7)
+    guard.tick()
+    update(17.0)
+    guard.tick()
+    assert not guard.latched and readiness[-1]
+    # Recovery invalidates old commands; Nav2 supplies a new plan and command.
+    update(17.1)
+    guard.path_clear = True
+    guard.tick()
+    assert readiness[-1] and commands[-1] == .4
+
+
+def test_fused_persistent_loss_still_latches_after_bounded_zero_output(strict_runtime):
+    guard, update, _, readiness, commands = strict_runtime
+    guard.tracking_loss_grace_s = 1.0
+    guard.odom_info_callback(OdomInfo(lost=True))
+    assert not guard.latched and commands[-1] == 0.0
+    update(14.11)
+    guard.tick()
+    assert guard.latched and not readiness[-1] and commands[-1] == 0.0
+
+
 def test_strict_invalid_odom_has_no_one_second_grace(strict_runtime):
     guard, _, _, readiness, commands = strict_runtime
     bad = deepcopy(guard.odom)
@@ -156,12 +203,65 @@ def test_tracking_ack_never_clears_operator_stop(strict_runtime):
     assert guard.latched and commands[-1] == 0.0
 
 
+def test_auto_recovery_waits_for_cancel_and_stationary_then_requires_new_goal(strict_runtime):
+    guard, update, _, readiness, commands = strict_runtime
+    guard.auto_recover_tracking_stop = True
+    guard.odom_info.lost = True
+    guard.tick()
+    guard.odom_info.lost = False
+    update(14.0)
+    guard.tick()
+    update(18.0)
+    guard.tick()
+    assert guard.tracking_stop_latched  # Old goal has not finished cancelling.
+    guard.active_goals = set()
+    guard.cancel_request = Future()
+    guard.tick()
+    assert guard.tracking_stop_latched
+    guard.cancel_request.set_result(None)
+    guard.odom.twist.twist.linear.x = 0.2
+    guard.tick()
+    assert guard.tracking_stop_latched
+    guard.odom.twist.twist.linear.x = 0.0
+    guard.tick()
+    assert not guard.latched and not guard.tracking_stop_latched
+    assert guard.command is None and not guard.path_clear
+    update(22.0)
+    guard.tick()
+    assert readiness[-1] and commands[-1] == 0.0
+    from std_srvs.srv import Trigger
+    guard.stop_callback(None, Trigger.Response())
+    update(26.0)
+    guard.tick()
+    assert guard.latched and commands[-1] == 0.0
+
+
+@pytest.mark.parametrize('age,healthy', [(0.6, True), (1.9, True), (2.01, False)])
+def test_map_tf_tolerates_short_delivery_delay_but_not_dead_broadcaster(runtime, age, healthy):
+    guard, _, transforms, _, _ = runtime
+    guard.map_tf_timeout_s = 2.0
+    transforms['map', 'odom'].header.stamp = ros_time(10.0-age).to_msg()
+    assert (guard.health_reason() == '') == healthy
+
+
+def test_monitor_receives_actual_vehicle_curvature_not_impossible_rpp_turn(strict_runtime):
+    guard, _, _, _, _ = strict_runtime
+    sent = []
+    guard.publisher.publish = sent.append
+    guard.command.linear.x, guard.command.angular.z = 0.25, -0.49
+    guard.tick()
+    assert sent[-1].linear.x == 0.25
+    assert sent[-1].angular.z == pytest.approx(-0.25 / 1.7)
+    assert guard.command.angular.z == -0.49  # Input and its timestamps stay intact.
+
+
 @pytest.fixture
 def runtime():
     guard = object.__new__(LocalizationGuard)
     now, readiness, commands = [10.0], [], []
     guard.get_clock = lambda: SimpleNamespace(now=lambda: ros_time(now[0]))
     parameters = {
+        'maximum_reverse_speed_m_s': 0.0,
         'localization_timeout_s': 2.0,
         'odometry_timeout_s': 1.0,
         'maximum_position_variance_m2': 0.25,
@@ -757,3 +857,54 @@ def test_native_registration_needs_no_continuous_match_or_second_covariance_gate
     refresh(1002.0, receive_odom=False)
     guard.tick()
     assert not readiness[-1] and guard.health_reason() == 'stale_odom_localization'
+
+
+def test_operator_pause_zeroes_output_without_latching_or_losing_readiness(strict_runtime):
+    from std_srvs.srv import SetBool
+    guard, update, _, readiness, commands = strict_runtime
+    messages = []
+    guard.operator_pause_pub = SimpleNamespace(publish=lambda msg: messages.append(msg.data))
+    reply = guard.set_motion_paused(SetBool.Request(data=True), SetBool.Response())
+    assert reply.success and commands[-1] == 0.
+    update(13.2)
+    guard.tick()
+    assert readiness[-1] and commands[-1] == 0. and not guard.latched
+    update(20.)
+    guard.tick()
+    assert commands[-1] == 0.
+    guard.set_motion_paused(SetBool.Request(data=False), SetBool.Response())
+    assert guard.command_time is None and commands[-1] == 0.
+    update(20.1)
+    guard.tick()
+    assert readiness[-1] and commands[-1] == .4
+    assert messages == [True, False]
+
+
+def test_fused_small_covariance_overrun_has_bounded_grace(strict_runtime):
+    guard, update, _, readiness, commands = strict_runtime
+    guard.covariance_grace_s = 1.0
+    bad = deepcopy(guard.odom)
+    bad.pose.covariance[35] = .13
+    update(13.2)
+    bad.header.stamp = ros_time(13.2).to_msg()
+    guard.odometry_callback(bad)
+    assert not guard.tracking_stop_latched
+    update(13.8)
+    bad.header.stamp = ros_time(13.8).to_msg()
+    guard.odometry_callback(bad)
+    assert not guard.tracking_stop_latched
+    update(14.21)
+    bad.header.stamp = ros_time(14.21).to_msg()
+    guard.odometry_callback(bad)
+    assert guard.tracking_stop_latched and commands[-1] == 0.
+
+
+def test_fused_grace_never_accepts_invalid_pose_or_large_covariance(strict_runtime):
+    guard, update, *_ = strict_runtime
+    guard.covariance_grace_s = 1.0
+    bad = deepcopy(guard.odom)
+    bad.pose.covariance[35] = .3
+    assert guard.odometry_reason(bad) == 'invalid_odom_pose_or_covariance'
+    bad.pose.covariance[35] = .13
+    bad.pose.pose.position.x = float('nan')
+    assert guard.odometry_reason(bad) == 'invalid_odom_pose_or_covariance'

@@ -2,6 +2,7 @@
 
 import json
 import math
+import time
 from pathlib import Path as FilePath
 
 from action_msgs.msg import GoalStatus, GoalStatusArray
@@ -18,12 +19,13 @@ from rclpy.time import Time
 from rcl_interfaces.msg import ParameterDescriptor
 from rtabmap_msgs.msg import Info, OdomInfo
 from std_msgs.msg import Bool, String
-from std_srvs.srv import Trigger
+from std_srvs.srv import Trigger, SetBool
 from tf2_ros import Buffer, TransformException, TransformListener
 from tf2_msgs.msg import TFMessage
 import yaml
 
 from rover_navigation.path_validation import path_is_clear, shared_footprint
+from rover_navigation.pixhawk_command_adapter_node import bounded_motion
 
 
 def valid_estimate(msg, frame, position_variance, yaw_variance):
@@ -84,9 +86,11 @@ class LocalizationGuard(Node):
 
     def __init__(self):
         super().__init__('localization_guard')
-        defaults = FilePath(get_package_share_directory('rover_navigation')) / 'config/nav2_rtab.yaml'
+        defaults = FilePath(get_package_share_directory(
+            'rover_navigation')) / 'config/nav2_rtab.yaml'
         footprint, padding = shared_footprint(yaml.safe_load(defaults.read_text()))
         for key, value in {
+            'maximum_reverse_speed_m_s': 0.0,
             # Deprecated compatibility parameter; RTAB events have no age deadline.
             'localization_timeout_s': 2.0,
             'odometry_timeout_s': 1.0,
@@ -108,9 +112,37 @@ class LocalizationGuard(Node):
         self.native_localization_only = self.declare_parameter(
             'native_localization_only', False, ParameterDescriptor(read_only=True)
         ).value
+        self.require_externalnav = self.declare_parameter('require_externalnav', False).value
+        self.externalnav_ready = False
+        self.externalnav_at = -float('inf')
+        if self.require_externalnav:
+            self.create_subscription(
+                Bool, '/external_navigation/ready', self.externalnav_callback, 1
+            )
         self.native_localization_initialized = False
         self.strict_tracking_safety = self.declare_parameter(
             'strict_tracking_safety', False, ParameterDescriptor(read_only=True)
+        ).value
+        self.covariance_grace_s = self.declare_parameter(
+            'covariance_grace_s', 0.0, ParameterDescriptor(read_only=True)
+        ).value
+        if not math.isfinite(self.covariance_grace_s) or not 0 <= self.covariance_grace_s <= 1.0:
+            raise ValueError('covariance_grace_s must be between 0 and 1 second')
+        self.odom_covariance_over_since = None
+        self.tracking_loss_grace_s = self.declare_parameter(
+            'tracking_loss_grace_s', 0.0, ParameterDescriptor(read_only=True)
+        ).value
+        if (not math.isfinite(self.tracking_loss_grace_s)
+                or not 0 <= self.tracking_loss_grace_s <= 1.0):
+            raise ValueError('tracking_loss_grace_s must be between 0 and 1 second')
+        self.tracking_loss_since = None
+        self.map_tf_timeout_s = self.declare_parameter(
+            'map_tf_timeout_s', 2.0, ParameterDescriptor(read_only=True)
+        ).value
+        if not math.isfinite(self.map_tf_timeout_s) or self.map_tf_timeout_s <= 0:
+            raise ValueError('map_tf_timeout_s must be finite and positive')
+        self.auto_recover_tracking_stop = self.declare_parameter(
+            'auto_recover_tracking_stop', True, ParameterDescriptor(read_only=True)
         ).value
         self.tracking_max_age_s = self.declare_parameter(
             'tracking_max_age_s', 2.5, ParameterDescriptor(read_only=True)
@@ -169,8 +201,12 @@ class LocalizationGuard(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.publisher = self.create_publisher(Twist, '/cmd_vel_guarded', 10)
+        self.operator_paused = False
+        self.create_service(SetBool, '/navigation/set_motion_paused', self.set_motion_paused)
         self.ready_pub = self.create_publisher(Bool, '/navigation/ready', 1)
         qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.operator_pause_pub = self.create_publisher(Bool, '/navigation/operator_paused', qos)
+        self.operator_pause_pub.publish(Bool(data=False))
         self.stop_latched_pub = self.create_publisher(Bool, '/navigation/stop_latched', qos)
         self.create_subscription(TFMessage, '/tf_static', self.tf_callback, qos)
         self.status_pub = self.create_publisher(String, '/navigation/status', qos)
@@ -398,13 +434,23 @@ class LocalizationGuard(Node):
             return 'invalid_odom_frame'
         if msg.child_frame_id != 'base_link':
             return 'invalid_odometry_child_frame'
-        if not valid_estimate(
-            msg,
-            'odom',
-            self.get_parameter('maximum_position_variance_m2').value,
-            self.get_parameter('maximum_yaw_variance_rad2').value,
-        ):
-            return 'invalid_odom_pose_or_covariance'
+        position_limit = self.get_parameter('maximum_position_variance_m2').value
+        yaw_limit = self.get_parameter('maximum_yaw_variance_rad2').value
+        if valid_estimate(msg, 'odom', position_limit, yaw_limit):
+            self.odom_covariance_over_since = None
+        else:
+            # Delayed VO briefly raises EKF prediction covariance between
+            # updates. Only bounded covariance overruns get this grace;
+            # bad frames/poses/NaNs/large uncertainty are rejected immediately.
+            grace = getattr(self, 'covariance_grace_s', 0.0)
+            if (not grace or not self.ever_ready
+                    or not valid_estimate(msg, 'odom', 2*position_limit, 2*yaw_limit)):
+                return 'invalid_odom_pose_or_covariance'
+            now = self.get_clock().now().nanoseconds/1e9
+            if getattr(self, 'odom_covariance_over_since', None) is None:
+                self.odom_covariance_over_since = now
+            if now-self.odom_covariance_over_since >= grace:
+                return 'invalid_odom_pose_or_covariance'
         if not all(
             math.isfinite(v)
             for v in (
@@ -426,6 +472,16 @@ class LocalizationGuard(Node):
 
     def route_callback(self, msg):
         self.route_time = self.get_clock().now() if msg.data else None
+
+    def set_motion_paused(self, request, response):
+        self.operator_paused = request.data
+        # Drop cached commands on both edges; release requires a fresh command.
+        self.command_time = None
+        self.publisher.publish(Twist())
+        self.operator_pause_pub.publish(Bool(data=request.data))
+        response.success = True
+        response.message = 'motion paused' if request.data else 'motion pause released'
+        return response
 
     def goal_status_callback(self, msg):
         """Observe the common Nav2 action, independently of which client sent it."""
@@ -534,7 +590,18 @@ class LocalizationGuard(Node):
         self.localization_ready_reason = self.coarse_hint_localization_reason()
         return runtime or self.localization_ready_reason
 
+    def externalnav_callback(self, msg):
+        """Keep FCU estimator readiness distinct from RTAB localization readiness."""
+        self.externalnav_ready = msg.data
+        self.externalnav_at = time.monotonic()
+
     def runtime_health_reason(self):
+        # Allow bounded status delivery jitter independently of VO sample health.
+        # An explicit not-ready report still blocks immediately.
+        if getattr(self, 'require_externalnav', False) and (
+            not self.externalnav_ready or time.monotonic() - self.externalnav_at > 2.0
+        ):
+            return 'external_navigation_not_ready'
         gated = getattr(self, 'coarse_hint_gate_enabled', False)
         native = getattr(self, 'native_localization_only', False)
         if getattr(self, 'strict_tracking_safety', False):
@@ -559,6 +626,11 @@ class LocalizationGuard(Node):
                 return f'waiting_{frame}_localization'
             if msg.header.frame_id != frame:
                 return f'invalid_{frame}_frame'
+            if frame == 'odom':
+                reason = self.odometry_reason(msg)
+                if reason:
+                    return reason
+                continue
             if not valid_estimate(
                 msg,
                 frame,
@@ -604,7 +676,9 @@ class LocalizationGuard(Node):
                 # This watches that broadcaster, NOT visual registration age.
                 # RGB-D odom TF instead carries the image acquisition stamp;
                 # its producer's liveness is already checked via /odom receipts.
-                if parent == 'map' and not self.fresh(tf.header.stamp, 0.5, future_tolerance=0.2):
+                if parent == 'map' and not self.fresh(
+                    tf.header.stamp, getattr(self, 'map_tf_timeout_s', 2.0), future_tolerance=0.2
+                ):
                     return f'stale_tf_{parent}_{child}'
                 if (
                     gated
@@ -701,7 +775,8 @@ class LocalizationGuard(Node):
         reason = self.health_reason()
         now = self.get_clock().now()
         # A brief receipt gap stops output immediately, but need not cancel a
-        # healthy Nav2 goal. Escalate a continuous gap after 0.5 s; explicit lost,
+        # healthy Nav2 goal. Escalate a continuous receipt gap after 0.5 s.
+        # Explicit fused loss has its separate bounded zero-output grace below;
         # invalid data and timestamp/TF failures still latch immediately.
         receipt_gap = reason in ('stale_odom_info', 'stale_odom_localization')
         if receipt_gap:
@@ -712,7 +787,21 @@ class LocalizationGuard(Node):
         receipt_gap_persistent = (
             receipt_gap and (now - self.receipt_gap_since).nanoseconds / 1e9 >= 0.5
         )
+        # Fused health can briefly expire between delayed VO and a rejected ICP
+        # sample. Zero output now, retain the goal for bounded recovery, then
+        # latch if loss persists. Camera-only explicit loss keeps its old policy.
+        if reason == 'visual_odometry_lost':
+            if getattr(self, 'tracking_loss_since', None) is None:
+                self.tracking_loss_since = now
+        else:
+            self.tracking_loss_since = None
+        transient_fused_loss = (
+            reason == 'visual_odometry_lost'
+            and (now - self.tracking_loss_since).nanoseconds / 1e9
+            < getattr(self, 'tracking_loss_grace_s', 0.0)
+        )
         tracking_failure = reason in (
+            'external_navigation_not_ready',
             'visual_odometry_lost',
             'waiting_odom_info',
             'stale_odom_info',
@@ -733,6 +822,7 @@ class LocalizationGuard(Node):
             getattr(self, 'strict_tracking_safety', False)
             and tracking_failure
             and (not receipt_gap or receipt_gap_persistent)
+            and not transient_fused_loss
             and self.ever_ready
             and self.goal_is_active()
             and not self.latched
@@ -745,6 +835,7 @@ class LocalizationGuard(Node):
             elif self.stable_since is None:
                 self.stable_since = now  # Healthy runtime accumulates while verdict is pending.
             recoverable = reason in (
+                'external_navigation_not_ready',
                 'visual_odometry_lost',
                 'waiting_odom_info',
                 'stale_odom_info',
@@ -787,6 +878,19 @@ class LocalizationGuard(Node):
             >= self.get_parameter('stable_duration_s').value
         )
         self.runtime_stable = stable
+        # A completed cancellation plus recovered, stationary tracking permits a
+        # NEW goal. Never resume the cancelled goal, switch mode, or clear an
+        # operator/structural-error stop. Reuse the explicit recovery checks.
+        if (
+            getattr(self, 'auto_recover_tracking_stop', False)
+            and getattr(self, 'tracking_stop_latched', False)
+            and self.goal_source == 'nav2'
+            and not reason and stable
+        ):
+            response = self.acknowledge_tracking_stop(None, Trigger.Response())
+            if response.success:
+                self.report('tracking_stop_recovered: waiting for a NEW goal')
+                return
         ready = not reason and stable and not self.latched
         self.final_navigation_ready = ready
         if ready and self.recovering:
@@ -801,7 +905,7 @@ class LocalizationGuard(Node):
         status = Bool()
         status.data = ready
         self.ready_pub.publish(status)
-        moving = ready and self.goal_is_active()
+        moving = ready and self.goal_is_active() and not getattr(self, 'operator_paused', False)
         # Native Nav2 owns the active path, collision checks and replanning.
         # Smac stamps a path BEFORE search: a 9-second search must not produce
         # an already-expired path, nor expire it during the next search. Goal,
@@ -818,7 +922,12 @@ class LocalizationGuard(Node):
         )
         if moving and path_ok and self.recent(self.command_time, 0.3):
             if finite_command:
-                output = self.command
+                # Collision Monitor must predict the feasible vehicle arc,
+                # not a tighter RPP correction that the downstream adapter clips.
+                output.linear.x, output.angular.z = bounded_motion(
+                    self.command.linear.x, self.command.angular.z, 0.4, 1.7,
+                    self.get_parameter('maximum_reverse_speed_m_s').value,
+                )
         self.publisher.publish(output)
         stop_status = Bool()
         stop_status.data = self.latched

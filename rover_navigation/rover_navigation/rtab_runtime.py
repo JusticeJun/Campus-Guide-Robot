@@ -25,7 +25,7 @@ def runtime_environment():
     ]
 
 
-def odometry_node(profile, rtab_config):
+def odometry_node(profile, rtab_config, fused=False):
     def boolean(name, default):
         setting = str(rtab_config.get(name, default)).lower()
         if setting not in ('true', 'false'):
@@ -36,7 +36,7 @@ def odometry_node(profile, rtab_config):
     odom_parameters = {
         'frame_id': 'base_link',
         'odom_frame_id': 'odom',
-        'publish_tf': True,
+        'publish_tf': not fused,
         # Processed RGB-D is also the map/mesh archive; retain its RGB channels.
         'keep_color': True,
         'wait_for_transform': float(rtab_config.get('wait_for_transform', 0.2)),
@@ -55,16 +55,19 @@ def odometry_node(profile, rtab_config):
         package='rtabmap_odom',
         executable='rgbd_odometry',
         name='rgbd_odometry',
-        namespace='rtabmap',
+        namespace='vo' if fused else 'rtabmap',
         output='screen',
         parameters=[odom_parameters],
         arguments=shlex.split(rtab_config.get('args', ''))
-        + shlex.split(rtab_config.get('odom_args', '')),
+        + shlex.split(rtab_config.get('odom_args', ''))
+        # Reset only when an independent local trajectory can bridge the loss.
+        # A camera-only odom reset must not silently authorize dead reckoning.
+        + (['--Odom/ResetCountdown', '10', '--Odom/ImageBufferSize', '1'] if fused else []),
         remappings=[
             ('rgb/image', profile['rgb_topic']),
             ('depth/image', profile['depth_topic']),
             ('rgb/camera_info', profile['camera_info_topic']),
             ('imu', rtab_config.get('imu_topic') or '/navigation/unused/imu'),
-            ('odom', '/odom'),
+            ('odom', '/vo/odom' if fused else '/odom'),
         ],
     )

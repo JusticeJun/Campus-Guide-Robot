@@ -6,6 +6,47 @@ import math
 import numpy as np
 
 
+def apply_obstacle_clearance(parameters, *, lidar_obstacles=False):
+    """
+    Apply the same clearance to old map snapshots and current Nav2 config.
+
+    Body + 0.15 m requested clearance + 0.05 m raster margin. Stored
+    and live obstacles share this footprint; no additional stored-map dilation.
+    Inflation outside that envelope is a soft route preference.
+    This is map-space clearance, not a bound on localization/tracking error.
+    """
+    costmaps = [parameters[n][n]['ros__parameters']
+                for n in ('local_costmap', 'global_costmap')]
+    # Apply the same 15 cm clearance + one grid cell to old snapshots too.
+    padding = 0.20
+    for costmap_name, costmap in zip(('local_costmap', 'global_costmap'), costmaps):
+        costmap['footprint_padding'] = padding
+        if lidar_obstacles:
+            costmap['static_layer']['map_topic'] = '/navigation/static_clearance_map'
+        layer = costmap['inflation_layer']
+        # Cover the padded circumscribed radius for Smac's fast collision test,
+        # with an additional soft-cost band outside it.
+        polygon = json.loads(costmap['footprint'])
+        radius = max(math.hypot(abs(x) + padding, abs(y) + padding) for x, y in polygon)
+        layer['inflation_radius'] = max(float(layer.get('inflation_radius', 0)),
+                                        1.5, radius + 0.2)
+        for name in costmap.get('plugins', []):
+            config = costmap.get(name, {})
+            if config.get('plugin') in ('nav2_costmap_2d::ObstacleLayer',
+                                        'nav2_costmap_2d::VoxelLayer'):
+                # Release global self-trapping observations during lidar field
+                # tests; retain local returns even inside the safety padding.
+                # StaticLayer obstacles are not cleared by this operation.
+                config['footprint_clearing_enabled'] = (
+                    lidar_obstacles and costmap_name == 'global_costmap'
+                )
+    planner = parameters['planner_server']['ros__parameters']
+    for name in planner.get('planner_plugins', []):
+        config = planner.get(name, {})
+        if config.get('plugin') == 'nav2_smac_planner/SmacPlannerHybrid':
+            config['cost_penalty'] = max(3.0, float(config.get('cost_penalty', 2.0)))
+
+
 def shared_footprint(parameters):
     """Require one base frame, polygon and padding for both costmaps and guard."""
     footprints = []

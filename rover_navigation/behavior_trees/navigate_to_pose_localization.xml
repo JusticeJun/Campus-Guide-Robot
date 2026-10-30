@@ -1,13 +1,15 @@
 <!-- Keep the outer goal during stationary localization recovery. -->
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
+    <OperatorPause>
     <LocalizationReady>
       <PipelineSequence name="NavigateWithReplanning">
         <RateController hz="1.0">
           <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
         </RateController>
-        <FollowPath path="{path}" controller_id="FollowPath"/>
+        <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="goal_checker"/>
       </PipelineSequence>
     </LocalizationReady>
+    </OperatorPause>
   </BehaviorTree>
 </root>
