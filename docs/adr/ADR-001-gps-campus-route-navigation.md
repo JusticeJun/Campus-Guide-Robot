@@ -1,13 +1,15 @@
 # ADR-001: GPS 기반 Campus Route Navigation Architecture
 
-## Context / Problem
+GPS 기반 주행 단계의 기록이다. 현재 확장은 [ADR-005](ADR-005-rgbd-map-navigation.md)를 참고한다.
+
+## 배경
 
 프로젝트는 Jetson의 ROS 2 node가 MAVROS를 통해 Pixhawk/ArduRover 기반
 Ackermann rover를 제어하는 outdoor navigation으로 시작했다. 단일 GPS
 목적지를 넘어 campus 내 여러 지점을 순서와 연결 관계에 따라 주행할
 전역 route 표현이 필요했다.
 
-## Decision
+## 결정
 
 Campus-scale global route는 GPS waypoint와 edge connectivity를 가진 graph로
 표현하고, Dijkstra shortest path로 목적지 route를 결정한다. 현재 GPS를
@@ -18,7 +20,7 @@ policy이지 global route shortcut mechanism이 아니다.
 Vehicle command boundary는 ROS 2 → MAVROS → Pixhawk/ArduRover로 유지하며,
 navigation software가 servo PWM을 직접 제어하지 않는다.
 
-## Evidence
+## 근거
 
 - 초기 custom navigator는 current GPS와 target GPS로 bearing을 구하고 compass
   heading error를 yaw command로 변환해 단일 목적지로 주행했다.
@@ -27,7 +29,7 @@ navigation software가 servo PWM을 직접 제어하지 않는다.
 - Nearest waypoint start는 edge 중간 출발 시 목적지 반대 방향 node를 먼저
   선택할 수 있어 edge-based initial entry로 보완했다.
 
-## Consequences
+## 영향
 
 - GPS waypoint graph는 navigation framework와 독립된 campus global-route source로
   남는다.

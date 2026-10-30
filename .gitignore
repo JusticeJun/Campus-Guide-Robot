@@ -36,6 +36,12 @@ htmlcov/
 /log/
 /test_results/
 .colcon/
+/.cache/
+/maps/
+*.db
+*.db-wal
+*.db-shm
+*.BIN
 
 # Runtime logs and temporary files
 *.log
