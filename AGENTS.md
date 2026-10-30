@@ -33,7 +33,8 @@ ROS 2 자율주행 시스템이다.
 
 책임은 가능한 한 다음과 같이 분리한다.
 
-- global route: GPS waypoint graph와 목적지 경로
+- mission: 웹·자연어 임무와 지도별 관찰 목적지
+- global route: 지도 기반 Nav2 목적지 경로 (GPS waypoint graph는 과거 기능)
 - localization: GPS, IMU, SLAM, sensor fusion
 - navigation: 경로 추종, 차량 제약, local navigation
 - perception: 장애물 및 환경 인식
@@ -61,7 +62,7 @@ Implementation → 필요한 local validation → 사용자 실차 테스트 →
 - 기능 개발과 수정은 별도 branch에서 수행한다.
 - `feat/`, `fix/`, `refactor/`, `chore/`, `docs/`, `test/` 등을 사용한다.
 - 이미 같은 목적의 적절한 branch에 있다면 불필요하게 새 branch를 만들지 않는다.
-- commit 메시지와 Issue/PR 제목은 영어로 작성하고, Issue/PR 본문과 프로젝트 문서는 한국어로 작성한다.
+- commit 메시지는 영어로 작성하고, Issue/PR 제목·본문과 프로젝트 문서는 한국어로 작성한다.
 - commit은 가능한 경우 Conventional Commits를 사용한다.
 - 하나의 Issue/Branch/PR은 가능한 한 하나의 명확한 목적을 가진다.
 - 사용자의 승인 없이 merge하지 않는다.

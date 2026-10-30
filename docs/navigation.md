@@ -17,52 +17,62 @@ roskeep() { bash "$HOME/ros2_ws/src/tools/ros_session.sh" "$@"; }
 
 `MAP_DIR`은 지도 관련 명령에만 필요하다. 기본 DDS 설정은 Jetson 내부 통신용이다.
 
-## 2. 센서 실행
+## 2. 센서 실행 방식
+
+센서를 각각 실행하려면 아래 명령을 사용한다. 카메라 런치가 장착 TF도 함께 발행하므로
+별도의 `static_transform_publisher`를 중복 실행하지 않는다.
 
 ```bash
 roskeep start mavros ros2 launch rover_navigation mavros.launch.py \
   fcu_url:=serial:///dev/ttyACM0:115200
 roskeep start camera ros2 launch rover_navigation camera.launch.py
-roskeep start camera_tf ros2 run tf2_ros static_transform_publisher \
-  --x 0.3001 --y 0.0175 --z 0.2032 --roll 0 --pitch 0 --yaw 0 \
-  --frame-id base_link --child-frame-id camera_link
+roskeep start lidar ros2 launch rover_navigation lidar.launch.py
 ```
 
-기존 지도 주행·이어 촬영은 camera 명령 대신 아래 명령을 사용한다. 같은 드라이버를 중복 실행하지 않는다.
+기존 지도 주행·이어 촬영은 camera 명령 대신 아래 명령으로 지도별 카메라 설정을 사용한다.
 
 ```bash
 roskeep start camera ros2 launch rover_navigation camera.launch.py \
   runtime_file:="$MAP_DIR/localization.yaml"
 ```
 
+또는 센서를 따로 실행하지 않고 아래 통합 명령의 `start_mavros:=true start_camera:=true
+start_lidar:=true`를 사용한다. 이미 센서가 켜져 있다면 해당 인자를 생략한다(기본 false).
+mapping과 navigation은 동시에 실행하지 않으며, 웹에서 준비한 navigation과도 중복 실행하지 않는다.
+
 ## 3. 새 지도·이어 촬영
 
-새 지도는 사용하지 않은 `MAP_DIR`에서 실행한다.
+VNC 데스크톱 터미널에서 실행하면 RTAB-Map 화면도 함께 열린다. 새 지도는 비어 있는
+`MAP_DIR`을 사용한다. 다음 예시는 센서까지 통합 실행한다.
+
+카메라 전용 새 지도:
 
 ```bash
 roskeep start mapping ros2 launch rover_navigation mapping.launch.py \
-  map_dir:="$MAP_DIR" rtabmap_viz:=false
+  map_dir:="$MAP_DIR" sensors:=rgbd rtabmap_viz:=true \
+  start_mavros:=true start_camera:=true
 ```
 
-이어 촬영은 원본 `rtabmap.db`와 `localization.yaml`이 있는 폴더를 지정한다.
-기존 구간에서 정합된 것을 확인하고 새 구간으로 이동한다.
+카메라·라이다 융합 새 지도:
 
 ```bash
 roskeep start mapping ros2 launch rover_navigation mapping.launch.py \
-  map_dir:="$MAP_DIR" continue:=true rtabmap_viz:=false
+  map_dir:="$MAP_DIR" sensors:=rgbd_lidar rtabmap_viz:=true \
+  start_mavros:=true start_camera:=true start_lidar:=true
 ```
 
-원본을 보존하면서 이어 촬영하려면 mapping이 종료된 뒤 지도 폴더 전체를 새 폴더에 복사하고
-새 경로를 `MAP_DIR`로 지정한다. 작동 중인 DB를 단순 복사하지 않는다.
-
-VNC 데스크톱 터미널에서 화면만 별도로 실행한다.
+이어 촬영은 기존 `rtabmap.db`와 `localization.yaml`이 있는 폴더를 지정한다.
+`sensors:=auto`가 저장된 센서 구성을 유지한다. 기존 구간에서 정합된 것을 확인하고 이동한다.
 
 ```bash
-roskeep start viz ros2 run rtabmap_viz rtabmap_viz --ros-args \
-  -r __ns:=/rtabmap -p subscribe_rgbd:=true -p subscribe_depth:=false \
-  -p frame_id:=base_link -p approx_sync:=true -p qos_image:=1 -p qos_odom:=1 \
-  -r rgbd_image:=/rtabmap/odom_rgbd_image -r odom:=/odom
+roskeep start mapping ros2 launch rover_navigation mapping.launch.py \
+  map_dir:="$MAP_DIR" continue:=true rtabmap_viz:=true \
+  start_mavros:=true start_camera:=true start_lidar:=true
 ```
+
+카메라 전용 지도이며 라이다가 없다면 `start_lidar:=true`를 생략한다.
+카메라 전용 DB를 이어 촬영하면서 융합 지도로 바꾸지 않는다. 센서 구성을 바꾸려면 새 지도를 만든다.
+원본을 보존하며 이어 촬영하려면 mapping 정상 종료 뒤 지도 폴더를 복사하고 새 경로를 지정한다.
 
 ## 4. 지도 저장
 
@@ -87,12 +97,12 @@ map1/
 
 ## 5. 위치추정 확인과 주행
 
-센서·카메라 TF는 계속 실행한 상태에서 VNC 터미널로 실행한다.
+아래는 VNC 터미널에서 센서까지 통합 실행하는 예시다. 센서를 별도로 실행했다면 `start_*:=true`를 생략한다.
 
 ```bash
-ros2 launch rover_navigation navigation.launch.py \
-  mode:=validation map_dir:="$MAP_DIR" \
-  start_mavros:=false start_camera:=false start_camera_tf:=false rviz:=true
+roskeep start navigation ros2 launch rover_navigation navigation.launch.py \
+  mode:=validation map_dir:="$MAP_DIR" rviz:=true \
+  start_mavros:=true start_camera:=true start_lidar:=true lidar_obstacles:=true
 ```
 
 ```bash
@@ -105,19 +115,23 @@ ros2 run tf2_ros tf2_echo map base_link
 `ready=true`와 실제 위치·방향, 관측한 구조물의 지도 일치를 확인한다.
 validation은 차량 어댑터가 없어 이동하지 않는다. 먼 목표를 오래 유지하면 progress 검사로 실패할 수 있다.
 
-validation을 종료한 뒤 실차 주행을 실행한다.
+`roskeep stop navigation`으로 validation을 정상 종료한 뒤 실차 주행을 실행한다.
 
 ```bash
-ros2 launch rover_navigation navigation.launch.py \
-  mode:=drive map_dir:="$MAP_DIR" \
-  start_mavros:=false start_camera:=false start_camera_tf:=false rviz:=true
+roskeep start navigation ros2 launch rover_navigation navigation.launch.py \
+  mode:=drive map_dir:="$MAP_DIR" rviz:=true \
+  start_mavros:=true start_camera:=true start_lidar:=true lidar_obstacles:=true
 ```
+
+기본 `local_odometry:=auto`는 지도에 저장된 센서 구성을 따른다. 카메라 전용 `map1`에서도
+라이다 회피는 위 명령으로 켜지지만, EKF까지 시험하려면 `local_odometry:=fused`를 추가한다.
+라이다 없이 카메라만 사용하려면 `start_lidar:=true`를 빼고 `lidar_obstacles:=false`로 실행한다.
 
 정합·ready 상태를 확인하고 운영자가 GUIDED/아밍과 정지 수단을 준비한 뒤 Nav2 Goal을 지정한다.
 직선 목표는 0.35m/s, 커브는 0.25~0.35m/s, 명령 상한은 0.4m/s다.
 FCU 실제 속도와 방향이 명령을 따르는지는 별도로 확인한다.
 Goal이 aborted여도 노드가 정상이고 ready라면 launch 재시작 없이 새 Goal을 지정할 수 있다.
-경로 계획의 시간 제한은 해제돼 있지만, 경로 부재·탐색 횟수 한도 등으로 실패할 수 있다.
+경로 계획의 시간 제한은 해제돼 있지만, 경로 부재·차량 제약·추적 실패 등으로 실패할 수 있다.
 
 추적 손실로 정지가 래치되면 실제 정지·FCU HOLD·위치추정 회복·기존 Goal 취소를 확인한 뒤 해제한다.
 
@@ -143,7 +157,7 @@ SSH/VNC 연결이 끊겨도 세션은 유지되지만 재부팅·전원 차단�
 ```bash
 roskeep stop camera
 roskeep stop mavros
-roskeep stop camera_tf
+roskeep stop lidar
 ```
 
 | 경로 (`~/ros2_ws` 아래) | 내용 / 정리 기준 |
@@ -157,6 +171,50 @@ roskeep stop camera_tf
 
 영상/rosbag은 기본적으로 녹화하지 않는다. `record_bag:=true`, `record_camera:=true`는
 필요할 때만 사용하며 용량을 따로 관리한다.
+
+### 홈 전체를 SSD로 옮기기
+
+기존 구성은 `~/ssd`에 NVMe를 마운트하고 `~/ros2_ws`, `~/.ros`, pip 캐시만 연결한다.
+이전 후에는 NVMe를 `/home/ykk` 자체에 마운트한다. OS·`/opt/ros`는 SD에 남고,
+프로젝트·설정·SSH 키·VS Code·로그·사용자 파일은 SSD에 저장된다.
+`ssd/` 경유 경로나 사용자 홈 사본은 남기지 않는다.
+다른 이름의 개인 프로젝트/가상환경은 동일한 사본이라는 근거 없이 지우지 않는다.
+
+차량 시동을 해제하고 진행한다. 다음 명령은 관리자 이전 작업을 **다음 부팅에 예약**한다.
+디스크를 포맷하거나 지금 로그인 세션의 홈을 옮기지는 않는다.
+
+```bash
+sudo python3 ~/ros2_ws/src/tools/storage/migrate_home.py install
+# 작업을 저장한 뒤 재부팅. 이전 중에는 SSH/웹 접속이 늦게 열린다.
+sudo reboot
+```
+
+부팅 시 사용자 프로세스가 시작되기 전에 파일을 복사하고 checksum으로 확인한다.
+기존 SSD 작업 공간은 재복사하지 않는다. 지도 DB·출발점 식별 경로와 캐시 키를 갱신하고
+새 경로에서 ROS를 다시 빌드한 뒤에만 SD 홈 원본을 제거한다.
+검증 또는 재빌드 실패 시 SD 홈과 기존 마운트로 복구하며, 성공하지 않은 상태를 완료로 표시하지 않는다.
+기존 기체 설정 백업은 파라미터 복구 자료이므로 일반 홈 사본과 구분해 유지한다.
+
+완료 확인:
+
+```bash
+findmnt -T /home/ykk
+findmnt -T /home/ykk/ros2_ws
+journalctl -u campus-home-migration.service -b --no-pager
+```
+
+두 경로가 모두 NVMe를 가리켜야 한다. 서비스의 SSD 검사는 기존 분리 마운트와
+전체 홈 마운트를 모두 지원하며, SSD가 없는 상태에서 SD에 새 작업 공간을 만들지 않는다.
+
+홈 마운트와 ROS 재빌드가 완료된 뒤 로그에
+`Unexpected source device; refusing SD cleanup`이 남으면 이전 설치본의 shared mount
+전파 때문에 마지막 SD 정리만 중단된 상태다. 다음 명령은 완료 기록·SSD UUID·fstab을
+검증하고, 별도 mount namespace에서 SD의 숨겨진 옛 홈만 제거한다. 실행 중인 SSD 홈과
+서비스를 다시 옮기거나 재시작하지 않는다. 성공한 경우에만 이전 서비스의 실패 표시를 해제한다.
+
+```bash
+sudo python3 ~/ros2_ws/src/tools/storage/migrate_home.py cleanup
+```
 
 ## 7. 기존 GPS 경로와 차량 시험 도구
 
