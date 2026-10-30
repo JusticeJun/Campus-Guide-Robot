@@ -1,0 +1,8 @@
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain Id="any">
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>100</MaxAutoParticipantIndex>
+    </Discovery>
+  </Domain>
+</CycloneDDS>

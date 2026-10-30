@@ -1,0 +1,59 @@
+# Shared acquisition/mapping/localization settings. Mapping pins a copy per map.
+# Stationary D435IF/Jetson transport qualified 2026-10-14; outdoor motion and
+# cross-session localization still require field validation (not an optimality claim).
+profile:
+  base_to_camera: [0.3001, 0.0175, 0.2032, 0.0, 0.0, 0.0]
+  odometry_provider: rgbd_odometry
+  rgb_topic: /camera/camera/color/image_raw
+  depth_topic: /camera/camera/aligned_depth_to_color/image_raw
+  camera_info_topic: /camera/camera/color/camera_info
+camera:
+  enable_sync: 'true'
+  align_depth.enable: 'true'
+  enable_color: 'true'
+  enable_depth: 'true'
+  enable_gyro: 'true'
+  enable_accel: 'true'
+  gyro_fps: '200'
+  accel_fps: '100'
+  unite_imu_method: '2'
+  rgb_camera.color_profile: 1280x720x15
+  depth_module.depth_profile: 848x480x15
+rtabmap:
+  approx_sync: 'true'
+  approx_sync_max_interval: '0.02'
+  visual_odometry: 'true'
+  imu_topic: /camera/imu
+  wait_imu_to_init: 'true'
+  # Large processed RGB-D samples were lost with Best Effort on this Jetson.
+  # RealSense image/camera_info publishers offer Reliable; use it through VO,
+  # the RGB-D relay and RTAB. IMU subscribers accept SensorData QoS (Best Effort).
+  qos: '1'
+  qos_imu: '2'
+  # Keep camera/IMU callbacks responsive while visual odometry processes a frame.
+  odom_always_process_most_recent_frame: 'true'
+  # VO needs a small, fast near-field map; localization needs wider appearance
+  # coverage. Keep full RGB-D in odom_rgbd_image, decimate only VO computation.
+  odom_args: >-
+    --Odom/ImageDecimation 2
+    --Vis/FeatureType 8 --Vis/MaxFeatures 1000 --Vis/MaxDepth 8.0
+    --Vis/DepthAsMask true --Vis/Iterations 300
+  args: >-
+    --Rtabmap/DetectionRate 2.0
+    --RGBD/LinearUpdate 0.10 --RGBD/AngularUpdate 0.10
+    --Mem/UseOdomFeatures false --Mem/DepthAsMask false
+    --Kp/DetectorStrategy 8 --Kp/MaxFeatures 1500 --Kp/MaxDepth 0
+    --Kp/GridRows 2 --Kp/GridCols 3
+    --Vis/FeatureType 8 --Vis/MinInliers 20 --Vis/MaxFeatures 1500
+    --Vis/DepthAsMask false --Vis/MaxDepth 15.0 --Vis/Iterations 2000
+    --RGBD/ProximityBySpace true --RGBD/OptimizeMaxError 3.0
+    --Optimizer/Strategy 2 --Optimizer/Iterations 20 --Optimizer/GravitySigma 0.3
+    --Grid/CellSize 0.05 --Grid/DepthDecimation 2 --Grid/RangeMax 5.0
+    --Mem/BinDataKept true --Mem/ImagePreDecimation 1 --Mem/ImagePostDecimation 1
+    --Rtabmap/LoopGPS false --Optimizer/PriorsIgnored true
+imu_filter:
+  raw_topic: /camera/camera/imu
+  output_topic: /camera/imu
+  use_mag: false
+  world_frame: enu
+  publish_tf: false

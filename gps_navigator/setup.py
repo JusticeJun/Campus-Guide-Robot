@@ -33,6 +33,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'imu_telemetry = gps_navigator.imu_telemetry_node:main',
             'path_planner = gps_navigator.path_planner_node:main',
             'turn_radius_calibration = '
             'gps_navigator.turn_radius_calibration_node:main',
