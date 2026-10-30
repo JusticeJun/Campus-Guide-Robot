@@ -84,7 +84,8 @@ class LocalizationGuard(Node):
 
     def __init__(self):
         super().__init__('localization_guard')
-        defaults = FilePath(get_package_share_directory('rover_navigation')) / 'config/nav2_rtab.yaml'
+        defaults = FilePath(get_package_share_directory(
+            'rover_navigation')) / 'config/nav2_rtab.yaml'
         footprint, padding = shared_footprint(yaml.safe_load(defaults.read_text()))
         for key, value in {
             # Deprecated compatibility parameter; RTAB events have no age deadline.

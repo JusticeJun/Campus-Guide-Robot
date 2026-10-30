@@ -95,7 +95,8 @@ def setup(context):
 
 
 def generate_launch_description():
-    default = str(Path(get_package_share_directory('rover_navigation')) / 'config/rtab_runtime.yaml')
+    default = str(Path(get_package_share_directory(
+        'rover_navigation')) / 'config/rtab_runtime.yaml')
     return LaunchDescription(
         [
             *runtime_environment(),
