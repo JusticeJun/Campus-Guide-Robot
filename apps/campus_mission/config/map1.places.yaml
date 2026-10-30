@@ -1,0 +1,55 @@
+map_id: map1
+map_fingerprint: 3b520b83c9e936c8cc574560994d4d7b51fa375f225a7265d43fb58c0fa525ee
+frame_id: map
+places:
+- id: nuri
+  name: 누리관
+  aliases:
+  - 누리관 입구
+  - 누리관 정문
+  category: landmark
+  observation_pose:
+    x: 1.829
+    y: -0.494
+    yaw: -2.594
+  note: 사용자가 표시한 map1 화살표의 대략 위치·방향. 실차 관찰 자세로 보정 가능.
+  source: user_annotated_map_2026_10_28
+  approximate: true
+  tasks:
+  - navigate
+  - photograph
+  - inspect
+- id: woongbi
+  name: 웅비관
+  aliases:
+  - 웅비관 입구
+  - 웅비관 정문
+  category: landmark
+  observation_pose:
+    x: 28.344
+    y: -30.968
+    yaw: -2.2
+  note: 사용자가 표시한 map1 화살표의 대략 위치·방향. 실차 관찰 자세로 보정 가능.
+  source: user_annotated_map_2026_10_28
+  approximate: true
+  tasks:
+  - navigate
+  - photograph
+  - inspect
+- id: plaza
+  name: 광장중앙
+  aliases:
+  - 광장 중앙
+  - 광장
+  category: landmark
+  observation_pose:
+    x: 57.279
+    y: -7.805
+    yaw: 0.015
+  note: 사용자가 표시한 map1 화살표의 대략 위치·방향. 실차 관찰 자세로 보정 가능.
+  source: user_annotated_map_2026_10_28
+  approximate: true
+  tasks:
+  - navigate
+  - photograph
+  - inspect

@@ -44,6 +44,18 @@ jobs:
           source install/setup.bash
           colcon test --event-handlers console_direct+
           colcon test-result --verbose
+      - name: Test mission ROS bridge in an isolated domain
+        if: hashFiles('ws/src/apps/campus_mission/pyproject.toml') != ''
+        run: |
+          apt-get install -y python3-venv
+          python3 -m venv --system-site-packages /tmp/mission-tests
+          env -u PYTHONPATH /tmp/mission-tests/bin/python -m pip install --upgrade 'pip>=23' 'setuptools>=64,<80' wheel
+          env -u PYTHONPATH /tmp/mission-tests/bin/python -m pip install --no-build-isolation './ws/src/apps/campus_mission[test]'
+          /tmp/mission-tests/bin/python -c 'import campus_mission; import importlib.metadata as m; print(m.version("campus-mission"))'
+          source /opt/ros/humble/setup.bash
+          source ws/install/setup.bash
+          ROS_DOMAIN_ID=91 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /tmp/mission-tests/bin/python -m pytest \
+            ws/src/apps/campus_mission/tests/test_ros_bridge.py -q
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4

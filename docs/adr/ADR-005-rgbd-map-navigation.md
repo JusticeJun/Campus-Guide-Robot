@@ -1,5 +1,7 @@
 # ADR-005: RGB-D 지도 주행과 위치추정 보호 경계
 
+상태: 카메라 전용 단계의 결정. 현재 다중 센서·ExternalNav 확장은 [ADR-006](ADR-006-multisensor-mission-runtime.md)을 따른다.
+
 ## 배경
 
 GPS-only 방식은 넓은 캠퍼스 경로를 주행했지만 좁은 구간의 정밀 위치추정에는 한계가 있었다.

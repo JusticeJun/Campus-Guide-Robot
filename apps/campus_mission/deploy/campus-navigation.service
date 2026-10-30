@@ -1,0 +1,16 @@
+[Unit]
+Description=Campus rover navigation (started by operator request)
+
+[Service]
+Type=simple
+WorkingDirectory=%h/ros2_ws
+ExecStartPre=/usr/bin/bash %h/ros2_ws/src/tools/check_storage.sh
+ExecStart=/usr/bin/bash %h/ros2_ws/src/apps/campus_mission/deploy/run_service.sh navigation
+Restart=no
+KillSignal=SIGINT
+KillMode=control-group
+TimeoutStopSec=150
+Environment=PYTHONUNBUFFERED=1
+UMask=0077
+
+# Intentionally no Install section: do not enable navigation at boot.
